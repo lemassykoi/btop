@@ -146,13 +146,29 @@ namespace Llm {
 
 	void clear();
 
-#ifndef BTOP_LLM_STANDALONE
-	//? Menu support, see Menu::llmMenu
-	std::vector<std::string> menu_content();
-	std::string menu_title();
-	void menu_key(const std::string& key);
+	//* Number of configured endpoints (fixed once set_targets has run)
+	size_t target_count();
+
+	//* True once per completed scrape round, so an open overlay repaints without the
+	//!< collector thread ever naming Menu::
+	bool new_data_since_menu_draw();
+
+	//? Box geometry and rendering, defined in btop_draw.cpp alongside the other boxes
+	extern int x, y, width, height, min_width, min_height;
+	extern bool shown, redraw;
+	extern std::string box;
 	extern std::atomic<bool> menu_open;
-#endif
+
+	//* Rows the docked box needs: frame plus one dense line per configured engine
+	int box_height();
+
+	//* One dense line per engine, for the docked box
+	std::vector<std::string> box_lines();
+	//* Full detail for the selected engine, shared by the box overlay and Menu::llmMenu
+	std::vector<std::string> detail_lines();
+	std::string title();
+	void nav(const std::string& key);
+	std::string draw(bool force_redraw, bool no_update);
 
 	//* Pure helpers, exposed for standalone testing
 	bool parse_url(const std::string& url, Target& out);

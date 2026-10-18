@@ -36,6 +36,7 @@ tab-size = 4
 #include "btop_log.hpp"
 #include "btop_shared.hpp"
 #include "btop_tools.hpp"
+#include "btop_llm.hpp"
 #include "btop_config.hpp"
 
 using std::cout;
@@ -143,6 +144,8 @@ namespace Term {
 		for (int i = 0; i < gpu; i++)
 			height += Gpu::gpu_b_height_offsets[i] + 4;
 	#endif
+		if (boxes.find("llm") != string::npos)
+			height += Llm::box_height();
 
 		return { width, height };
 	}

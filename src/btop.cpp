@@ -585,6 +585,17 @@ namespace Runner {
 					}
 				}
 			#endif
+				//? LLM inference engines: collected on its own thread, drawn here
+				if (Llm::shown) {
+					try {
+						if (not pause_output)
+							output += Llm::draw(conf.force_redraw, conf.no_update);
+					}
+					catch (const std::exception& e) {
+						throw std::runtime_error("Llm:: -> " + string{e.what()});
+					}
+				}
+
 				//? MEM
 				if (v_contains(conf.boxes, "mem")) {
 					try {
@@ -1166,7 +1177,7 @@ static auto configure_tty_mode(std::optional<bool> force_tty) {
 			}
 
 			//? Re-render an open menu that asked for updates (LLM engine state is live)
-			if (Menu::active and Menu::redraw)
+			if (Menu::active and (Menu::redraw or (Llm::menu_open and Llm::new_data_since_menu_draw())))
 				Menu::process();
 
 			//? Loop over input polling and input action processing

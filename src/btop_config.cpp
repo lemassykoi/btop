@@ -50,7 +50,7 @@ using namespace Tools;
 const vector<string> Config::valid_graph_symbols = { "braille", "block", "tty" };
 const vector<string> Config::valid_graph_symbols_def = { "default", "braille", "block", "tty" };
 const vector<string> Config::valid_boxes = {
-	"cpu", "mem", "net", "proc"
+	"cpu", "mem", "net", "proc", "llm"
 #ifdef GPU_SUPPORT
 	,"gpu0", "gpu1", "gpu2", "gpu3", "gpu4", "gpu5"
 #endif
@@ -546,8 +546,8 @@ namespace Config {
 			}
 			if (vals.at(0).starts_with("gpu")) {
 				set("graph_symbol_gpu", vals.at(2));
-			} else {
-				set(strings.find("graph_symbol_" + vals.at(0))->first, vals.at(2));
+			} else if (const auto symbol = strings.find("graph_symbol_" + vals.at(0)); symbol != strings.end()) {
+				set(symbol->first, vals.at(2));
 			}
 		}
 

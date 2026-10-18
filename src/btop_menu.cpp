@@ -1910,16 +1910,16 @@ static int optionsMenu(const string& key) {
 		}
 
 		if (not key.empty())
-			Llm::menu_key(key);
+			Llm::nav(key);
 
 		//? Rebuilt on every input and on each collector refresh, so the values stay live
-		const auto content = Llm::menu_content();
+		const auto content = Llm::detail_lines();
 		width = std::min(78, Term::width - 4);
 		height = std::min((int)content.size() + 6, Term::height - 2);
 		x = Term::width / 2 - width / 2;
 		y = Term::height / 2 - height / 2;
 
-		bg = Draw::createBox(x + 2, y, width, height, Theme::c("hi_fg"), true, uresize(Llm::menu_title(), width - 8));
+		bg = Draw::createBox(x + 2, y, width, height, Theme::c("hi_fg"), true, uresize(Llm::title(), width - 8));
 
 		auto& out = Global::overlay;
 		out = bg;

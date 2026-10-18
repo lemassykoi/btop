@@ -30,6 +30,7 @@ tab-size = 4
 
 #include "btop_config.hpp"
 #include "btop_draw.hpp"
+#include "btop_llm.hpp"
 #include "btop_input.hpp"
 #include "btop_log.hpp"
 #include "btop_menu.hpp"
@@ -2274,7 +2275,7 @@ namespace Draw {
 		Cpu::y = Mem::y = Net::y = Proc::y = 1;
 		Cpu::width = Mem::width = Net::width = Proc::width = 0;
 		Cpu::height = Mem::height = Net::height = Proc::height = 0;
-		Cpu::redraw = Mem::redraw = Net::redraw = Proc::redraw = true;
+		Cpu::redraw = Mem::redraw = Net::redraw = Proc::redraw = Llm::redraw = true;
 
 		Cpu::shown = boxes.contains("cpu");
 	#ifdef GPU_SUPPORT
@@ -2302,6 +2303,7 @@ namespace Draw {
 		Mem::shown = boxes.contains("mem");
 		Net::shown = boxes.contains("net");
 		Proc::shown = boxes.contains("proc");
+		Llm::shown = boxes.contains("llm");
 
 		//* Calculate and draw cpu box outlines
 		if (Cpu::shown) {
@@ -2544,8 +2546,273 @@ namespace Draw {
 		#else
 			y = (cpu_bottom and Cpu::shown) ? 1 : Cpu::height + 1;
 		#endif
+			//? The llm panel borrows its rows from the bottom of the process box
+			const auto llm_rows = Llm::box_height();
+			if (Llm::shown and height - llm_rows >= min_height + 2) {
+				height -= llm_rows;
+				Llm::x = x;
+				Llm::y = y + height;
+				Llm::width = width;
+				Llm::height = llm_rows;
+			}
+			else
+				Llm::shown = false;
+
 			select_max = height - 3;
 			box = createBox(x, y, width, height, Theme::c("proc_box"), true, "proc", "", 4);
 		}
+		else if (Llm::shown) {
+			//? No process box to take rows from: anchor to the bottom of the free column
+			Llm::width = Term::width - (Mem::shown ? Mem::width : (Net::shown ? Net::width : 0));
+			Llm::x = 1;
+			Llm::height = Llm::box_height();
+			Llm::y = Term::height - Llm::height + 1;
+		}
+
+		if (Llm::shown)
+			Llm::box = createBox(Llm::x, Llm::y, Llm::width, Llm::height, Theme::c("proc_box"), true, "llm", "", 0);
+	}
+}
+
+namespace Llm {
+	//* LLM inference engine panel. Data comes from btop_llm.cpp (own collector thread);
+	//!< geometry is allocated in Draw::calcSizes(), which takes the rows from Proc.
+
+	//? min_height must agree with box_height(): 2 frame rows + at least one content row,
+	//* otherwise draw() would refuse to paint the panel it just allocated
+	int x = 1, y = 1, width = 0, height = 0, min_width = 20, min_height = 3;
+	bool shown = false, redraw = true;
+	std::string box;
+
+	//* Frame (2) plus one dense line per engine, with a floor so the empty state fits
+	int box_height() {
+		return 2 + std::max(1u, static_cast<unsigned>(target_count()));
+	}
+
+
+	std::atomic<bool> menu_open{false};
+	static size_t menu_selected = 0;
+	static bool menu_raw = false;
+
+	//* Theme lookups go through unordered_map::at: an unknown name would propagate out of the
+	//!< menu/runner and kill btop's main loop, so every colour here degrades to no colour.
+	static std::string color(std::string_view name) {
+		try {
+			const std::string key(name);
+			return Theme::c(key);
+		}
+		catch (const std::exception&) {
+			return {};
+		}
+	}
+
+	static std::string gradient(std::string_view name, double percent) {
+		try {
+			const std::string key(name);
+			const auto& colors = Theme::g(key);
+			const auto index = static_cast<size_t>(std::clamp(percent, 0.0, 100.0));
+			return colors.at(std::min(index, colors.size() - 1));
+		}
+		catch (const std::exception&) {
+			return {};
+		}
+	}
+
+	//* Percentage, dropping the decimal once it carries no information
+	static std::string as_pct(double ratio) {
+		if(ratio < 0)
+			return "--";
+		return ratio >= 0.1 ? fmt::format("{:.0f}%", ratio * 100.0) : fmt::format("{:.1f}%", ratio * 100.0);
+	}
+
+	static std::string as_num(double value, int precision = 1, std::string_view suffix = {}) {
+		if(value < 0)
+			return "--";
+		return fmt::format("{:.{}f}{}", value, precision, suffix);
+	}
+
+	//* Interval ratio, falling back to the since-start value while the engine has no traffic
+	static std::string ratio_text(double interval, double lifetime) {
+		if(interval >= 0)
+			return as_pct(interval);
+		if(lifetime >= 0)
+			return as_pct(lifetime) + " since start";
+		return "--";
+	}
+
+	static std::string as_count(long long value, std::string_view suffix = {}) {
+		if(value < 0)
+			return "--";
+		return std::to_string(value) + std::string(suffix);
+	}
+
+	std::string title() {
+		std::scoped_lock lock(mtx);
+		if(engines.empty())
+			return "llm engines"s;
+		menu_selected = std::min(menu_selected, engines.size() - 1);
+		const auto& engine = engines[menu_selected];
+		if(engines.size() < 2)
+			return fmt::format("llm engines {}", engine.target.label);
+		return fmt::format("llm engines {} [{}/{}]", engine.target.label, menu_selected + 1, engines.size());
+	}
+
+	std::vector<std::string> detail_lines_impl();
+
+	std::vector<std::string> detail_lines() {
+		try {
+			return detail_lines_impl();
+		}
+		catch (const std::exception& e) {
+			return {color("main_fg") + "llm: "s + e.what()};
+		}
+	}
+
+	std::vector<std::string> detail_lines_impl() {
+		std::vector<std::string> lines;
+		std::scoped_lock lock(mtx);
+
+		if(engines.empty()) {
+			lines.push_back(Fx::ub + color("main_fg")
+				+ "No endpoints configured. Set llm_endpoints in the config,"s);
+			lines.push_back(Fx::ub + color("main_fg")
+				+ "e.g. strata|http://127.0.0.1:8013/metrics/prometheus|~/key.json"s);
+			return lines;
+		}
+
+		menu_selected = std::min(menu_selected, engines.size() - 1);
+		const auto& e = engines[menu_selected];
+
+		const auto key = [&](std::string text) {
+			return Fx::b + color("title") + cjust(text, 14) + Fx::ub + color("main_fg");
+		};
+
+		lines.push_back(key("endpoint") + uresize(e.target.url, 55));
+		lines.push_back(key("engine") + (e.detected.empty() ? "--"s : e.detected)
+			+ (e.engine_version.empty() ? ""s : "  v" + e.engine_version)
+			+ (e.kv_backend.empty() ? ""s : "  kv " + e.kv_backend));
+		lines.push_back(key("model") + (e.model.empty() ? "--"s : uresize(e.model, 58)));
+		lines.push_back(" "s);
+
+		if(not e.up) {
+			lines.push_back(key("status") + Fx::b + gradient("used", 100.0) + "DOWN" + Fx::ub + color("main_fg")
+				+ (e.error.empty() ? ""s : "  " + uresize(e.error, 48)));
+			lines.push_back(key("retries") + std::to_string(e.fails));
+		}
+		else {
+			const auto tok_s = e.current_tok_s();
+			lines.push_back(key("state") + (e.state.empty() ? "--"s : e.state)
+				+ (e.phase.empty() ? ""s : " (" + e.phase + ")"));
+			lines.push_back(key("throughput") + (tok_s > 0
+				? Fx::b + gradient("cpu", 100.0 - std::min(100.0, tok_s / 1.5))
+					+ as_num(tok_s, 1, " tok/s") + Fx::ub + color("main_fg")
+				: "--"s)
+				+ (e.gen_tok_s_avg > 0 or e.live_tok_s_mean > 0
+					? "   avg " + as_num(e.live_tok_s_mean > 0 ? e.live_tok_s_mean : e.gen_tok_s_avg) + " tok/s"s
+					: ""s));
+			lines.push_back(key("prefill") + as_num(e.prefill_tok_s_avg > 0 ? e.prefill_tok_s_avg : e.prefill_tok_s, 0, " tok/s"));
+			lines.push_back(key("requests") + as_count(e.running, " running") + "   "
+				+ as_count(e.waiting >= 0 ? e.waiting : e.live_queued, " queued") + "   "
+				+ as_count(e.requests_total, " total"));
+			lines.push_back(key("generated") + as_count(e.live_generated, " tokens")
+				+ (e.live_elapsed_s > 0 ? "   " + as_num(e.live_elapsed_s, 1, "s elapsed") : ""s));
+			lines.push_back(key("prompt") + as_count(e.live_prompt_tokens, " tokens")
+				+ (e.live_prompt_total > 0 ? "   read " + std::to_string(e.live_prompt_read) + "/" + std::to_string(e.live_prompt_total) : ""s));
+			lines.push_back(key("cache hit") + ratio_text(e.hit_rate, e.hit_rate_lifetime));
+			lines.push_back(key("spec accept") + ratio_text(e.accept_rate, e.accept_rate_lifetime));
+			lines.push_back(key("kv usage") + as_pct(e.kv_usage));
+			lines.push_back(key("context") + as_num(e.context_tokens, 0, " tokens"));
+			lines.push_back(key("vram free") + as_num(e.vram_free_mib, 0, " MiB"));
+			if(e.expert_slots >= 0)
+				lines.push_back(key("experts") + std::to_string(e.expert_slots) + "   cache "
+					+ as_num(e.expert_cache_mib, 0, " MiB"));
+			lines.push_back(key("engine rss") + as_num(e.rss_mib / 1024.0, 2, " GiB"));
+		}
+
+		if(menu_raw) {
+			lines.push_back(" "s);
+			lines.push_back(Fx::b + color("title") + "raw metrics"s);
+			std::vector<std::pair<std::string, double>> raw(e.gauges.begin(), e.gauges.end());
+			std::ranges::sort(raw, {}, &std::pair<std::string, double>::first);
+			for(const auto& [name, value] : raw) {
+				if(lines.size() > 40) {
+					lines.push_back("  ... (truncated)"s);
+					break;
+				}
+				lines.push_back(Fx::ub + color("main_fg") + "  " + uresize(name, 46) + " " + fmt::format("{:.6g}", value));
+			}
+		}
+
+		lines.push_back(" "s);
+		lines.push_back(Fx::b + color("hi_fg") + " left/right "s + Fx::ub + color("main_fg") + "engine   "s
+			+ Fx::b + color("hi_fg") + "r "s + Fx::ub + color("main_fg") + "raw metrics   "s
+			+ Fx::b + color("hi_fg") + "esc/q "s + Fx::ub + color("main_fg") + "close"s);
+		return lines;
+	}
+
+	void nav(const std::string& key) {
+		std::scoped_lock lock(mtx);
+		if(is_in(key, "left", "h") and menu_selected > 0)
+			--menu_selected;
+		else if(is_in(key, "right", "l") and menu_selected + 1 < engines.size())
+			++menu_selected;
+		else if(is_in(key, "r"))
+			menu_raw = not menu_raw;
+	}
+	//* One dense line per endpoint: label, state, throughput, queue, cache ratios
+	std::vector<std::string> box_lines() {
+		std::vector<std::string> lines;
+		try {
+			std::scoped_lock lock(mtx);
+			if (engines.empty()) {
+				lines.push_back(color("main_fg") + "no llm_endpoints configured");
+				return lines;
+			}
+			for (const auto& e : engines) {
+				std::string line;
+				line += color("title") + Fx::b + uresize(e.target.label, 10) + Fx::ub + ' ';
+				if (not e.up) {
+					line += gradient("used", 100.0) + "down"s + color("main_fg");
+					if (not e.error.empty())
+						line += "  " + uresize(e.error, std::max(8, width - 24));
+					lines.push_back(line);
+					continue;
+				}
+
+				const auto tok_s = e.current_tok_s();
+				line += color("main_fg") + uresize(e.state.empty() ? e.detected : e.state, 11) + ' ';
+				line += (tok_s > 0 ? gradient("cpu", 100.0 - std::min(100.0, tok_s / 1.5)) : color("inactive_fg"))
+					+ as_num(tok_s, 1) + " t/s"s + color("main_fg");
+				line += "  q " + (e.waiting >= 0 ? std::to_string(e.waiting) : "--"s);
+				line += "  kv " + as_pct(e.kv_usage);
+				line += "  hit " + as_pct(e.hit_rate >= 0 ? e.hit_rate : e.hit_rate_lifetime);
+				line += "  spec " + as_pct(e.accept_rate >= 0 ? e.accept_rate : e.accept_rate_lifetime);
+				if (not e.model.empty())
+					line += "  " + color("inactive_fg") + uresize(e.model, std::max(0, width - 78)) + color("main_fg");
+				lines.push_back(line);
+			}
+		}
+		catch (const std::exception& e) {
+			lines.assign({color("main_fg") + std::string("llm: ") + e.what()});
+		}
+		return lines;
+	}
+
+	std::string draw(bool force_redraw, bool no_update [[maybe_unused]]) {
+		std::string out;
+		if (redraw or force_redraw or Global::resized or box.empty()) {
+			out = box;
+			redraw = false;
+		}
+		if (width < min_width or height < min_height)
+			return out;	//? too narrow to draw into: frame only
+
+		auto row = y + 1;
+		for (const auto& line : box_lines()) {
+			if (row >= y + height - 1)
+				break;
+			out += Mv::to(row++, x + 2) + line + Fx::reset;
+		}
+		return out;
 	}
 }

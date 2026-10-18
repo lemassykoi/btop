@@ -18,14 +18,6 @@ tab-size = 4
 
 #include "btop_llm.hpp"
 
-#ifndef BTOP_LLM_STANDALONE
-	//? The menu composition below needs btop's theme/toolkit; define BTOP_LLM_STANDALONE to
-	//!< compile the collector on its own (see tests/llm_probe.cpp)
-	#include "btop_menu.hpp"
-	#include "btop_theme.hpp"
-	#include "btop_tools.hpp"
-#endif
-
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -48,9 +40,6 @@ tab-size = 4
 #include <unistd.h>
 
 using namespace std::literals::string_literals;
-#ifndef BTOP_LLM_STANDALONE
-using namespace Tools;
-#endif
 
 namespace Llm {
 	std::vector<Engine> engines;
@@ -548,6 +537,10 @@ namespace Llm {
 
 	bool enabled() {
 		return not work.empty();
+	}
+
+	size_t target_count() {
+		return work.size();
 	}
 
 	void clear() {
@@ -1153,6 +1146,18 @@ namespace Llm {
 
 	static std::thread collector;
 	static std::atomic<bool> running{false};
+	std::atomic<uint64_t> scrape_seq{0};
+	static uint64_t menu_seq{};
+
+	//* True exactly once per completed scrape round, so an open overlay repaints without the
+	//!< collector thread ever naming Menu::
+	bool new_data_since_menu_draw() {
+		const auto current = scrape_seq.load();
+		if (current == menu_seq)
+			return false;
+		menu_seq = current;
+		return true;
+	}
 
 	void start() {
 		if(work.empty() or running)
@@ -1161,10 +1166,7 @@ namespace Llm {
 		collector = std::thread([] {
 			while(running) {
 				collect();
-#ifndef BTOP_LLM_STANDALONE
-				if(menu_open)
-					Menu::redraw = true;
-#endif
+				++scrape_seq;
 				//? Sleep in slices so stop() stays responsive on quit
 				for(int slept = 0; running and slept < options.interval_ms; slept += 50)
 					std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -1178,142 +1180,4 @@ namespace Llm {
 			collector.join();
 	}
 
-#ifndef BTOP_LLM_STANDALONE
-	//* ---------------------------------------------------------------- menu
-
-	std::atomic<bool> menu_open{false};
-	static size_t menu_selected = 0;
-	static bool menu_raw = false;
-
-	//* Percentage, dropping the decimal once it carries no information
-	static std::string as_pct(double ratio) {
-		if(ratio < 0)
-			return "--";
-		return ratio >= 0.1 ? fmt::format("{:.0f}%", ratio * 100.0) : fmt::format("{:.1f}%", ratio * 100.0);
-	}
-
-	static std::string as_num(double value, int precision = 1, std::string_view suffix = {}) {
-		if(value < 0)
-			return "--";
-		return fmt::format("{:.{}f}{}", value, precision, suffix);
-	}
-
-	//* Interval ratio, falling back to the since-start value while the engine has no traffic
-	static std::string ratio_text(double interval, double lifetime) {
-		if(interval >= 0)
-			return as_pct(interval);
-		if(lifetime >= 0)
-			return as_pct(lifetime) + " since start";
-		return "--";
-	}
-
-	static std::string as_count(long long value, std::string_view suffix = {}) {
-		if(value < 0)
-			return "--";
-		return std::to_string(value) + std::string(suffix);
-	}
-
-	std::string menu_title() {
-		std::scoped_lock lock(mtx);
-		if(engines.empty())
-			return "llm engines"s;
-		menu_selected = std::min(menu_selected, engines.size() - 1);
-		const auto& engine = engines[menu_selected];
-		if(engines.size() < 2)
-			return fmt::format("llm engines {}", engine.target.label);
-		return fmt::format("llm engines {} [{}/{}]", engine.target.label, menu_selected + 1, engines.size());
-	}
-
-	std::vector<std::string> menu_content() {
-		std::vector<std::string> lines;
-		std::scoped_lock lock(mtx);
-
-		if(engines.empty()) {
-			lines.push_back(Fx::ub + Theme::c("main_fg")
-				+ "No endpoints configured. Set llm_endpoints in the config,"s);
-			lines.push_back(Fx::ub + Theme::c("main_fg")
-				+ "e.g. strata|http://127.0.0.1:8013/metrics/prometheus|~/key.json"s);
-			return lines;
-		}
-
-		menu_selected = std::min(menu_selected, engines.size() - 1);
-		const auto& e = engines[menu_selected];
-
-		const auto key = [&](std::string text) {
-			return Fx::b + Theme::c("title") + cjust(text, 14) + Fx::ub + Theme::c("main_fg");
-		};
-
-		lines.push_back(key("endpoint") + uresize(e.target.url, 55));
-		lines.push_back(key("engine") + (e.detected.empty() ? "--"s : e.detected)
-			+ (e.engine_version.empty() ? ""s : "  v" + e.engine_version)
-			+ (e.kv_backend.empty() ? ""s : "  kv " + e.kv_backend));
-		lines.push_back(key("model") + (e.model.empty() ? "--"s : uresize(e.model, 58)));
-		lines.push_back(" "s);
-
-		if(not e.up) {
-			lines.push_back(key("status") + Fx::b + Theme::g("used")[100] + "DOWN" + Fx::ub + Theme::c("main_fg")
-				+ (e.error.empty() ? ""s : "  " + uresize(e.error, 48)));
-			lines.push_back(key("retries") + std::to_string(e.fails));
-		}
-		else {
-			const auto tok_s = e.current_tok_s();
-			lines.push_back(key("state") + (e.state.empty() ? "--"s : e.state)
-				+ (e.phase.empty() ? ""s : " (" + e.phase + ")"));
-			lines.push_back(key("throughput") + (tok_s > 0
-				? Fx::b + Theme::g("cpu_core_90")[static_cast<size_t>(std::min(100.0, tok_s / 2.0))]
-					+ as_num(tok_s, 1, " tok/s") + Fx::ub + Theme::c("main_fg")
-				: "--"s)
-				+ (e.gen_tok_s_avg > 0 or e.live_tok_s_mean > 0
-					? "   avg " + as_num(e.live_tok_s_mean > 0 ? e.live_tok_s_mean : e.gen_tok_s_avg) + " tok/s"s
-					: ""s));
-			lines.push_back(key("prefill") + as_num(e.prefill_tok_s_avg > 0 ? e.prefill_tok_s_avg : e.prefill_tok_s, 0, " tok/s"));
-			lines.push_back(key("requests") + as_count(e.running, " running") + "   "
-				+ as_count(e.waiting >= 0 ? e.waiting : e.live_queued, " queued") + "   "
-				+ as_count(e.requests_total, " total"));
-			lines.push_back(key("generated") + as_count(e.live_generated, " tokens")
-				+ (e.live_elapsed_s > 0 ? "   " + as_num(e.live_elapsed_s, 1, "s elapsed") : ""s));
-			lines.push_back(key("prompt") + as_count(e.live_prompt_tokens, " tokens")
-				+ (e.live_prompt_total > 0 ? "   read " + std::to_string(e.live_prompt_read) + "/" + std::to_string(e.live_prompt_total) : ""s));
-			lines.push_back(key("cache hit") + ratio_text(e.hit_rate, e.hit_rate_lifetime));
-			lines.push_back(key("spec accept") + ratio_text(e.accept_rate, e.accept_rate_lifetime));
-			lines.push_back(key("kv usage") + as_pct(e.kv_usage));
-			lines.push_back(key("context") + as_num(e.context_tokens, 0, " tokens"));
-			lines.push_back(key("vram free") + as_num(e.vram_free_mib, 0, " MiB"));
-			if(e.expert_slots >= 0)
-				lines.push_back(key("experts") + std::to_string(e.expert_slots) + "   cache "
-					+ as_num(e.expert_cache_mib, 0, " MiB"));
-			lines.push_back(key("engine rss") + as_num(e.rss_mib / 1024.0, 2, " GiB"));
-		}
-
-		if(menu_raw) {
-			lines.push_back(" "s);
-			lines.push_back(Fx::b + Theme::c("title") + "raw metrics"s);
-			std::vector<std::pair<std::string, double>> raw(e.gauges.begin(), e.gauges.end());
-			std::ranges::sort(raw, {}, &std::pair<std::string, double>::first);
-			for(const auto& [name, value] : raw) {
-				if(lines.size() > 40) {
-					lines.push_back("  ... (truncated)"s);
-					break;
-				}
-				lines.push_back(Fx::ub + Theme::c("main_fg") + "  " + uresize(name, 46) + " " + fmt::format("{:.6g}", value));
-			}
-		}
-
-		lines.push_back(" "s);
-		lines.push_back(Fx::b + Theme::c("hi_fg") + " left/right "s + Fx::ub + Theme::c("main_fg") + "engine   "s
-			+ Fx::b + Theme::c("hi_fg") + "r "s + Fx::ub + Theme::c("main_fg") + "raw metrics   "s
-			+ Fx::b + Theme::c("hi_fg") + "esc/q "s + Fx::ub + Theme::c("main_fg") + "close"s);
-		return lines;
-	}
-
-	void menu_key(const std::string& key) {
-		std::scoped_lock lock(mtx);
-		if(is_in(key, "left", "h") and menu_selected > 0)
-			--menu_selected;
-		else if(is_in(key, "right", "l") and menu_selected + 1 < engines.size())
-			++menu_selected;
-		else if(is_in(key, "r"))
-			menu_raw = not menu_raw;
-	}
-#endif
 }
