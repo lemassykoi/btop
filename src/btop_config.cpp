@@ -118,7 +118,7 @@ namespace Config {
 
 		{"graph_symbol_proc", 	"# Graph symbol to use for graphs in cpu box, \"default\", \"braille\", \"block\" or \"tty\"."},
 
-		{"shown_boxes", 		"#* Manually set which boxes to show. Available values are \"cpu mem net proc\" and \"gpu0\" through \"gpu5\", separate values with whitespace."},
+		{"shown_boxes", 		"#* Manually set which boxes to show. Available values are \"cpu mem net proc llm\" and \"gpu0\" through \"gpu5\", separate values with whitespace."},
 
 		{"llm_endpoints", 		"#* LLM inference engine endpoints to poll, as \"<label>|<url>[|<token-or-token-file>[|<live-json-url>]]\" entries separated by \";\"."},
 

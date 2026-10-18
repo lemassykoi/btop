@@ -240,6 +240,21 @@ namespace Input {
 					Menu::show(Menu::Menus::Llm);
 					return;
 				}
+				else if (key == "l" and not vim_keys) {
+					//? Toggle the llm panel. Lowercase l is proc-list movement when the
+					//!< user enabled vim_keys, so the binding yields to that setup
+					atomic_wait(Runner::active);
+
+					if (not Config::toggle_box("llm")) {
+						Menu::show(Menu::Menus::SizeError);
+						return;
+					}
+					Config::current_preset.reset();
+					Draw::calcSizes();
+					Draw::update_clock(true);
+					Runner::run("all", false, true);
+					return;
+				}
 				else if (key.size() == 1 and isint(key)) {
 					auto intKey = std::atoi(key.data());
 				#ifdef GPU_SUPPORT
