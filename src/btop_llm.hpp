@@ -74,7 +74,9 @@ namespace Llm {
 		long long running = -1;		//!< requests currently in the batch
 		long long waiting = -1;		//!< requests queued
 		long long requests_total = -1;
-		double kv_usage = -1;		//!< KV cache / token pool utilization, 0-1
+		double kv_usage = -1;		//!< KV cache / token pool utilization, 0-1 (engine gauge)
+		double ctx_usage = -1;		//!< in-flight tokens / context window, 0-1 (derived)
+									//!< engines without a KV gauge still answer "how full is the window"
 		double hit_rate = -1;		//!< prefix cache hit ratio, 0-1 (derived from counter deltas)
 		double accept_rate = -1;	//!< speculative decoding acceptance ratio, 0-1 (derived)
 		//!< Same two ratios over the engine's whole lifetime. Interval values need traffic

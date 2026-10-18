@@ -2631,6 +2631,16 @@ namespace Llm {
 		return fmt::format("{:.{}f}{}", value, precision, suffix);
 	}
 
+	//!< Short, fixed-width-friendly counter: "--" when unknown, capped at two digits
+	//!< (named apart from Proc::as_count, which is visible here via the enclosing namespace)
+	static std::string count_str(long long value) {
+		if(value < 0)
+			return "--";
+		if(value > 99)
+			return "99+";
+		return std::to_string(value);
+	}
+
 	//* Interval ratio, falling back to the since-start value while the engine has no traffic
 	static std::string ratio_text(double interval, double lifetime) {
 		if(interval >= 0)
@@ -2720,7 +2730,10 @@ namespace Llm {
 				+ (e.live_prompt_total > 0 ? "   read " + std::to_string(e.live_prompt_read) + "/" + std::to_string(e.live_prompt_total) : ""s));
 			lines.push_back(key("cache hit") + ratio_text(e.hit_rate, e.hit_rate_lifetime));
 			lines.push_back(key("spec accept") + ratio_text(e.accept_rate, e.accept_rate_lifetime));
-			lines.push_back(key("kv usage") + as_pct(e.kv_usage));
+			lines.push_back(key("kv usage") + as_pct(e.kv_usage)
+				+ (e.kv_usage < 0 ? "  (not exposed by this engine)"s : ""s));
+			lines.push_back(key("ctx usage") + ratio_text(e.ctx_usage, -1)
+				+ (e.context_tokens > 0 ? "  of "s + as_num(e.context_tokens, 0, " tokens") : ""s));
 			lines.push_back(key("context") + as_num(e.context_tokens, 0, " tokens"));
 			lines.push_back(key("vram free") + as_num(e.vram_free_mib, 0, " MiB"));
 			if(e.expert_slots >= 0)
@@ -2768,27 +2781,61 @@ namespace Llm {
 				lines.push_back(color("main_fg") + "no llm_endpoints configured");
 				return lines;
 			}
+			const auto inner = std::max(0, width - 4);
+
 			for (const auto& e : engines) {
+				//? Every field is padded before it is coloured, so a state change (idle ->
+				//!< reading -> generating) cannot shift the numbers sideways
 				std::string line;
-				line += color("title") + Fx::b + uresize(e.target.label, 10) + Fx::ub + ' ';
+				int used = 11;	//? label column + separator
+				line += color("title") + Fx::b + ljust(uresize(e.target.label, 10), 10) + Fx::ub + ' ';
 				if (not e.up) {
-					line += gradient("used", 100.0) + "down"s + color("main_fg");
+					line += ljust("down", 11) + gradient("used", 100.0) + "DOWN"s + color("main_fg");
 					if (not e.error.empty())
-						line += "  " + uresize(e.error, std::max(8, width - 24));
+						line += "  " + uresize(e.error, std::max(0, inner - 25));
 					lines.push_back(line);
 					continue;
 				}
 
 				const auto tok_s = e.current_tok_s();
-				line += color("main_fg") + uresize(e.state.empty() ? e.detected : e.state, 11) + ' ';
-				line += (tok_s > 0 ? gradient("cpu", 100.0 - std::min(100.0, tok_s / 1.5)) : color("inactive_fg"))
-					+ as_num(tok_s, 1) + " t/s"s + color("main_fg");
-				line += "  q " + (e.waiting >= 0 ? std::to_string(e.waiting) : "--"s);
-				line += "  kv " + as_pct(e.kv_usage);
-				line += "  hit " + as_pct(e.hit_rate >= 0 ? e.hit_rate : e.hit_rate_lifetime);
-				line += "  spec " + as_pct(e.accept_rate >= 0 ? e.accept_rate : e.accept_rate_lifetime);
-				if (not e.model.empty())
-					line += "  " + color("inactive_fg") + uresize(e.model, std::max(0, width - 78)) + color("main_fg");
+				line += color("main_fg") + ljust(uresize(e.state.empty() ? e.detected : e.state, 11), 11) + ' ';
+				used += 12;
+
+				//? Fields are added whole or the tail is dropped from here on: independent
+				//!< fits() checks would let a narrow later field sneak in when a wider earlier
+				//!< one was dropped, which would misalign the columns between frames
+				bool tail_dropped = false;
+				const auto fits = [&](int columns) {
+					if (tail_dropped or used + columns > inner) {
+						tail_dropped = true;
+						return false;
+					}
+					return true;
+				};
+
+				if (fits(10)) {
+					line += (tok_s > 0 ? gradient("cpu", 100.0 - std::min(100.0, tok_s / 1.5)) : color("inactive_fg"))
+						+ rjust(as_num(tok_s, 1), 5) + color("main_fg") + " t/s ";
+					used += 10;
+				}
+				if (fits(9)) {
+					line += "r" + rjust(count_str(e.running), 2) + " q" + rjust(count_str(e.waiting), 2) + "  ";
+					used += 9;
+				}
+				if (fits(10)) {
+					line += "ctx " + rjust(as_pct(e.ctx_usage), 4) + "  ";
+					used += 10;
+				}
+				if (fits(10)) {
+					line += "hit " + rjust(as_pct(e.hit_rate >= 0 ? e.hit_rate : e.hit_rate_lifetime), 4) + "  ";
+					used += 10;
+				}
+				if (fits(9)) {
+					line += "spec " + rjust(as_pct(e.accept_rate >= 0 ? e.accept_rate : e.accept_rate_lifetime), 4);
+					used += 9;
+				}
+				if (not e.model.empty() and fits(8))
+					line += "  " + color("main_fg") + uresize(e.model, inner - used - 2);
 				lines.push_back(line);
 			}
 		}

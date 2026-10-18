@@ -908,6 +908,7 @@ namespace Llm {
 		engine.live_generated = engine.live_prompt_tokens = -1;
 		engine.live_prompt_read = engine.live_prompt_total = engine.live_queued = -1;
 		engine.context_tokens = engine.vram_free_mib = engine.expert_cache_mib = -1;
+		engine.ctx_usage = -1;
 		engine.expert_slots = -1;
 
 				if(engine.target.live_url.empty())
@@ -962,6 +963,15 @@ namespace Llm {
 		if(engine.live_prompt_total > 0 and engine.live_prompt_read >= 0
 			and engine.live_prompt_read <= engine.live_prompt_total)
 			engine.hit_rate = 1.0 - static_cast<double>(engine.live_prompt_read) / engine.live_prompt_total;
+
+		//? How much of the context window the in-flight request occupies: the closest
+		//!< honest stand-in for a KV utilization figure on engines that do not report one
+		if(engine.context_tokens > 0) {
+			const auto in_flight = static_cast<double>(std::max(0LL, engine.live_prompt_tokens)
+				+ std::max(0LL, engine.live_generated));
+			if(in_flight > 0)
+				engine.ctx_usage = std::min(1.0, in_flight / engine.context_tokens);
+		}
 
 		engine.live_available = true;
 	}
