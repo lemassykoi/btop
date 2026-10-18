@@ -236,6 +236,10 @@ namespace Input {
 					Menu::show(Menu::Menus::Options);
 					return;
 				}
+				else if (is_in(key, "L")) {
+					Menu::show(Menu::Menus::Llm);
+					return;
+				}
 				else if (key.size() == 1 and isint(key)) {
 					auto intKey = std::atoi(key.data());
 				#ifdef GPU_SUPPORT

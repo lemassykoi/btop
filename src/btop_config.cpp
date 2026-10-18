@@ -120,6 +120,12 @@ namespace Config {
 
 		{"shown_boxes", 		"#* Manually set which boxes to show. Available values are \"cpu mem net proc\" and \"gpu0\" through \"gpu5\", separate values with whitespace."},
 
+		{"llm_endpoints", 		"#* LLM inference engine endpoints to poll, as \"<label>|<url>[|<token-or-token-file>[|<live-json-url>]]\" entries separated by \";\"."},
+
+		{"llm_update_ms", 		"#* Interval in milliseconds between engine scrapes, independent of update_ms."},
+
+		{"llm_timeout_ms", 		"#* Socket timeout in milliseconds for each engine request."},
+
 		{"update_ms", 			"#* Update time in milliseconds, recommended 2000 ms or above for better sample times for graphs."},
 
 		{"proc_sorting",		"#* Processes sorting, \"pid\" \"program\" \"arguments\" \"threads\" \"user\" \"memory\" \"cpu lazy\" \"cpu direct\",\n"
@@ -273,6 +279,7 @@ namespace Config {
 	std::unordered_map<std::string_view, string> strings = {
 		{"color_theme", "Default"},
 		{"shown_boxes", "cpu mem net proc"},
+		{"llm_endpoints", ""},
 		{"graph_symbol", "braille"},
 		{"disable_presets", "Off"},
 		{"presets", "cpu:1:default,proc:0:default cpu:0:default,mem:0:default,net:0:default cpu:0:block,net:0:tty"},
@@ -383,6 +390,8 @@ namespace Config {
 
 	std::unordered_map<std::string_view, int> ints = {
 		{"update_ms", 2000},
+		{"llm_update_ms", 1000},
+		{"llm_timeout_ms", 400},
 		{"net_download", 100},
 		{"net_upload", 100},
 		{"proc_tree_auto_collapse", 0},

@@ -66,6 +66,7 @@ tab-size = 4
 #include "btop_input.hpp"
 #include "btop_log.hpp"
 #include "btop_menu.hpp"
+#include "btop_llm.hpp"
 #include "btop_shared.hpp"
 #include "btop_theme.hpp"
 #include "btop_tools.hpp"
@@ -212,6 +213,7 @@ void clean_quit(int sig) {
 	if (Global::quitting) return;
 	Global::quitting = true;
 	Runner::stop();
+	Llm::stop();
 	if (Global::_runner_started) {
 	#if defined __APPLE__ || defined __OpenBSD__ || defined __NetBSD__
 		if (pthread_join(Runner::runner_id, nullptr) != 0) {
@@ -1040,6 +1042,14 @@ static auto configure_tty_mode(std::optional<bool> force_tty) {
 		Config::set("shown_boxes", "cpu mem net proc"s);
 	}
 
+	//? LLM inference engine metrics: inactive unless llm_endpoints is configured
+	if (const auto& endpoints = Config::getS("llm_endpoints"); not endpoints.empty()) {
+		Llm::options.interval_ms = std::max(200, Config::getI("llm_update_ms"));
+		Llm::options.timeout_ms = std::max(50, Config::getI("llm_timeout_ms"));
+		Llm::set_targets(Tools::ssplit(endpoints, ';'));
+		Llm::start();
+	}
+
 	//? Update list of available themes and generate the selected theme
 	Theme::updateThemes();
 	Theme::setTheme();
@@ -1154,6 +1164,10 @@ static auto configure_tty_mode(std::optional<bool> force_tty) {
 				update_ms = Config::getI("update_ms");
 				future_time = time_ms() + update_ms;
 			}
+
+			//? Re-render an open menu that asked for updates (LLM engine state is live)
+			if (Menu::active and Menu::redraw)
+				Menu::process();
 
 			//? Loop over input polling and input action processing
 			for (auto current_time = time_ms(); current_time < future_time; current_time = time_ms()) {

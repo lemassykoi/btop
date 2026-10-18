@@ -17,6 +17,7 @@ tab-size = 4
 */
 
 #include "btop_menu.hpp"
+#include "btop_llm.hpp"
 
 #include "btop_config.hpp"
 #include "btop_draw.hpp"
@@ -1890,6 +1891,52 @@ static int optionsMenu(const string& key) {
 	}
 
 	//* Add menus here and update enum Menus in header
+	static int llmMenu(const string& key) {
+		//? LLM inference engine metrics, see src/btop_llm.cpp
+		static int width{};
+		static int height{};
+		static int x{};
+		static int y{};
+
+		if (not Llm::menu_open) {
+			Llm::menu_open = true;
+			bg.clear();
+		}
+
+		if (is_in(key, "escape", "q", "L")) {
+			Llm::menu_open = false;
+			bg.clear();
+			return Closed;
+		}
+
+		if (not key.empty())
+			Llm::menu_key(key);
+
+		//? Rebuilt on every input and on each collector refresh, so the values stay live
+		const auto content = Llm::menu_content();
+		width = std::min(78, Term::width - 4);
+		height = std::min((int)content.size() + 6, Term::height - 2);
+		x = Term::width / 2 - width / 2;
+		y = Term::height / 2 - height / 2;
+
+		bg = Draw::createBox(x + 2, y, width, height, Theme::c("hi_fg"), true, uresize(Llm::menu_title(), width - 8));
+
+		auto& out = Global::overlay;
+		out = bg;
+
+		auto cy = y + 3;
+		for (const auto& line : content) {
+			if (cy > y + height - 2)
+				break;
+			out += Mv::to(cy++, x + 3) + line;
+		}
+		out += Fx::reset;
+
+		//? The runner only prints the overlay when redraw is set; process() clears it again
+		redraw = true;
+		return Changed;
+	}
+
 	const auto menuFunc = vector{
 		ref(sizeError),
 		ref(signalChoose),
@@ -1899,8 +1946,9 @@ static int optionsMenu(const string& key) {
 		ref(helpMenu),
 		ref(reniceMenu),
 		ref(mainMenu),
+		ref(llmMenu),
 	};
-	bitset<8> menuMask;
+	bitset<16> menuMask;
 
 	void process(const std::string_view key) {
 		if (menuMask.none()) {
