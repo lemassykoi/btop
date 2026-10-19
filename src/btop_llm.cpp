@@ -1222,6 +1222,18 @@ namespace Llm {
 		constexpr std::array<int, 6> denied_ports = {22, 53, 67, 68, 111, 631};
 		constexpr int max_probes_per_pass = 24;
 		constexpr size_t sniff_bytes = 64U << 10;
+		//!< Loopback services answer in milliseconds and anything that hangs is not an engine,
+		//!< so discovery must not inherit the scrape timeout: 24 ports x 2 paths x 400ms left
+		//!< the panel reading "scanning loopback..." for ~19s on a box with many listeners
+		constexpr int discover_timeout_ms = 200;
+		constexpr uint64_t discover_budget_ms = 1200;
+
+		//* Well-known inference ports, tried first so a useful row lands in the first pass
+		auto port_rank(int port) -> int {
+			static const std::array<int, 10> preferred = {8013, 8000, 30000, 30001, 8080, 8081, 11434, 5000, 3000, 8001};
+			const auto it = std::find(preferred.begin(), preferred.end(), port);
+			return it == preferred.end() ? static_cast<int>(preferred.size()) : static_cast<int>(it - preferred.begin());
+		}
 
 		//* /proc/net/tcp stores addresses as host-order hex words: 0100007F is 127.0.0.1 and
 		//!< 00000000 is 0.0.0.0 (wildcard); a wildcard listener is still a process on this host
@@ -1295,6 +1307,7 @@ namespace Llm {
 				return false;
 			Options sniff = options;
 			sniff.max_bytes = 4U << 10;
+			sniff.timeout_ms = discover_timeout_ms;
 			std::string body;
 			int status = 0;
 			std::string err;
@@ -1310,7 +1323,7 @@ namespace Llm {
 			for(const auto& [prefix, name] : families)
 				if(body.find(prefix) != std::string::npos)
 					return name;
-			return "prometheus";
+			return "other";	//? short on purpose: labels are "<family>-<port>" in a 12-column field
 		}
 	}
 #endif
@@ -1323,8 +1336,12 @@ namespace Llm {
 		std::vector<int> ports;
 		listen_ports("/proc/net/tcp", false, ports);
 		listen_ports("/proc/net/tcp6", true, ports);
-		std::ranges::sort(ports);
+		std::ranges::sort(ports, [](int a, int b) {
+			const auto ra = port_rank(a), rb = port_rank(b);
+			return ra != rb ? ra < rb : a < b;
+		});
 		ports.erase(std::unique(ports.begin(), ports.end()), ports.end());
+		const auto pass_deadline = now_ms() + discover_budget_ms;
 
 		//? An engine that stopped listening disappears instead of leaving a dead row
 		std::erase_if(work, [&ports](const Engine& e) {
@@ -1341,7 +1358,7 @@ namespace Llm {
 			if(std::any_of(work.begin(), work.end(),
 				[&](const Engine& e) { return e.target.port == port_str and e.target.host.find('.') != std::string::npos; }))
 				continue;
-			if(++probed > max_probes_per_pass)
+			if(++probed > max_probes_per_pass or now_ms() > pass_deadline)
 				break;
 
 			//? Deliberately just the two conventional paths: looser guesses turn any local
@@ -1361,6 +1378,7 @@ namespace Llm {
 
 				Options sniff = options;
 				sniff.max_bytes = sniff_bytes;
+				sniff.timeout_ms = discover_timeout_ms;
 				std::string body;
 				int status = 0;
 				std::string err;
