@@ -1025,6 +1025,7 @@ namespace Llm {
 
 			engine.status = status;
 			engine.bytes = body.size();
+			engine.derived_state.clear();
 			engine.error.clear();
 			engine.up = true;
 			engine.fails = 0;
@@ -1082,6 +1083,20 @@ namespace Llm {
 
 			engine.gen_tok_s = counter_rate(engine, sums, gen_total, started);
 			engine.prefill_tok_s = counter_rate(engine, sums, prompt_total, started);
+
+			//? Engines without a live state field (vLLM, SGLang, llama.cpp) still get a
+			//!< "current step": which counter moved since the last scrape. Needs a baseline,
+			//!< otherwise the very first sample would read as idle.
+			if(engine.has_baseline) {
+				if(engine.gen_tok_s > 0)
+					engine.derived_state = "generating";
+				else if(engine.prefill_tok_s > 0)
+					engine.derived_state = "reading";
+				else if(engine.running > 0)
+					engine.derived_state = "scheduled";
+				else
+					engine.derived_state = "idle";
+			}
 			engine.gen_tok_s_avg = pick(sums, gen_avg);
 			engine.prefill_tok_s_avg = pick(sums, prompt_avg);
 
@@ -1156,6 +1171,7 @@ namespace Llm {
 			engine.prev_times.clear();
 			for(const auto& [name, value] : sums)
 				engine.prev_times[name] = finished;
+			engine.has_baseline = true;
 		}
 
 		std::scoped_lock lock(mtx);
@@ -1177,6 +1193,10 @@ namespace Llm {
 			return false;
 		menu_seq = current;
 		return true;
+	}
+
+	double Engine::display_tok_s() const {
+		return (thinking() and options.hide_tok_s_thinking) ? -1 : current_tok_s();
 	}
 
 	void start() {

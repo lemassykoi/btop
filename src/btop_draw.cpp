@@ -2710,9 +2710,10 @@ namespace Llm {
 			lines.push_back(key("retries") + std::to_string(e.fails));
 		}
 		else {
-			const auto tok_s = e.current_tok_s();
-			lines.push_back(key("state") + (e.state.empty() ? "--"s : e.state)
-				+ (e.phase.empty() ? ""s : " (" + e.phase + ")"));
+			const auto tok_s = e.display_tok_s();
+			lines.push_back(key("state") + (e.display_state().empty() ? "--"s : e.display_state())
+				+ (e.phase.empty() ? ""s : " (" + e.phase + ")")
+				+ (e.state_derived() ? "  (derived)"s : ""s));
 			lines.push_back(key("throughput") + (tok_s > 0
 				? Fx::b + gradient("cpu", 100.0 - std::min(100.0, tok_s / 1.5))
 					+ as_num(tok_s, 1, " tok/s") + Fx::ub + color("main_fg")
@@ -2797,10 +2798,10 @@ namespace Llm {
 					continue;
 				}
 
-				const auto tok_s = e.current_tok_s();
+				const auto tok_s = e.display_tok_s();
 				//? Engines without a live state field (vLLM) would otherwise repeat their
 				//!< name here, so an unknown state reads as "--" rather than the engine name
-				line += color("main_fg") + ljust(uresize(e.state.empty() ? "--"s : e.state, 11), 11) + ' ';
+				line += color("main_fg") + ljust(uresize(e.display_state(), 11), 11) + ' ';
 				used += 12;
 
 				//? Fields are added whole or the tail is dropped from here on: independent

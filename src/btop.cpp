@@ -1057,6 +1057,7 @@ static auto configure_tty_mode(std::optional<bool> force_tty) {
 	if (const auto& endpoints = Config::getS("llm_endpoints"); not endpoints.empty()) {
 		Llm::options.interval_ms = std::max(200, Config::getI("llm_update_ms"));
 		Llm::options.timeout_ms = std::max(50, Config::getI("llm_timeout_ms"));
+		Llm::options.hide_tok_s_thinking = Config::getB("llm_hide_tok_s_thinking");
 		Llm::set_targets(Tools::ssplit(endpoints, ';'));
 		Llm::start();
 	}

@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <unistd.h>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -56,6 +57,8 @@ static void dump(const Llm::Engine& e) {
 	std::cout << "  spec accept  " << (e.accept_rate < 0 ? "--" : num(e.accept_rate * 100, 0) + "%")
 	          << "   [lifetime " << (e.accept_rate_lifetime < 0 ? "--" : num(e.accept_rate_lifetime * 100, 0) + "%") + "]\n";
 	std::cout << "  engine rss   " << (e.rss_mib < 0 ? "--" : num(e.rss_mib / 1024.0, 2) + " GiB") << "\n";
+	std::cout << "  state        " << (e.display_state().empty() ? "--" : e.display_state())
+	          << (e.state_derived() ? "  (derived)" : "  (engine)") << "\n";
 	std::cout << "  live         " << (e.live_available
 		? ("state=" + (e.state.empty() ? "?"s : e.state) + " phase=" + (e.phase.empty() ? "-"s : e.phase)
 			+ " tok/s=" + num(e.live_tok_s) + " mean=" + num(e.live_tok_s_mean)
@@ -72,7 +75,8 @@ static void dump(const Llm::Engine& e) {
 			  << " expert_cache=" << num(e.expert_cache_mib, 0) << " MiB"
 			  << " kv=" << (e.kv_backend.empty() ? "--" : e.kv_backend)
 			  << " ver=" << (e.engine_version.empty() ? "--" : e.engine_version) << "\n";
-	std::cout << "  >> tok/s used by UI: " << num(e.current_tok_s()) << "\n";
+	std::cout << "  >> tok/s used by UI: " << num(e.display_tok_s())
+	          << (e.thinking() and e.display_tok_s() < 0 and e.current_tok_s() > 0 ? "  (hidden: thinking)" : "") << "\n";
 	std::cout << "  raw metrics  " << e.gauges.size() << "\n";
 	if(const auto* verbose = std::getenv("LLM_PROBE_RAW"))
 		if(*verbose == '1' or *verbose == 'y')
@@ -100,6 +104,8 @@ int main(int argc, char** argv) {
 		specs = defaults();
 
 	Llm::options.timeout_ms = 1500;
+	if(const char* hide = std::getenv("LLM_HIDE_THINKING"); hide != nullptr and *hide != '\0')
+		Llm::options.hide_tok_s_thinking = true;
 	Llm::set_targets(specs);
 
 	//? Two scrapes: the first seeds the counters, the second yields rates

@@ -126,6 +126,9 @@ namespace Config {
 
 		{"llm_timeout_ms", 		"#* Socket timeout in milliseconds for each engine request."},
 
+		{"llm_hide_tok_s_thinking", 	"#* Show \"--\" instead of a token rate while an engine reports phase \"thinking\".\n"
+								"#* Off by default: reasoning engines keep that phase for a whole generation, so enabling it hides throughput entirely."},
+
 		{"update_ms", 			"#* Update time in milliseconds, recommended 2000 ms or above for better sample times for graphs."},
 
 		{"proc_sorting",		"#* Processes sorting, \"pid\" \"program\" \"arguments\" \"threads\" \"user\" \"memory\" \"cpu lazy\" \"cpu direct\",\n"
@@ -322,6 +325,7 @@ namespace Config {
 	std::unordered_map<std::string_view, string> stringsTmp;
 
 	std::unordered_map<std::string_view, bool> bools = {
+		{"llm_hide_tok_s_thinking", false},
 		{"theme_background", true},
 		{"truecolor", true},
 		{"rounded_corners", true},

@@ -90,7 +90,11 @@ namespace Llm {
 		//!< Engines that expose cumulative counters only (Strata updates its Prometheus
 		//!< counters when a request finishes) need this for instantaneous throughput.
 		bool live_available = false;
-		std::string state;				//!< "idle", "generating", "prefilling", ...
+		std::string state;				//!< "idle", "generating", "prefilling", ... (engine-reported)
+		std::string derived_state;		//!< phase inferred from counter movement, used when the
+		//!< engine reports no state itself (vLLM and friends have no live endpoint)
+		bool has_baseline = false;		//!< false until one scrape has seeded the counters, so the
+		//!< first sample cannot be mistaken for an idle engine
 		std::string phase;
 		double live_tok_s = -1;
 		double live_tok_s_mean = -1;
@@ -121,11 +125,27 @@ namespace Llm {
 				return live_tok_s;
 			return gen_tok_s > 0 ? gen_tok_s : -1;
 		}
+
+		//* Strata reports phase="thinking" for an entire reasoning generation, not as a
+	//!< transient sub-step, so blanking throughput while it is set would hide the panel's
+	//!< headline number for every request. Suppression is therefore opt-in (llm_hide_tok_s_thinking).
+	bool thinking() const { return phase == "thinking"; }
+
+	//* Defined in the .cpp: needs Options, which is declared after Engine
+	double display_tok_s() const;
+
+		//* Engine-reported state wins; otherwise the derived one, which may itself be empty
+		const std::string& display_state() const {
+			return state.empty() ? derived_state : state;
+		}
+
+		bool state_derived() const { return state.empty() and not derived_state.empty(); }
 	};
 
 	struct Options {
 		int timeout_ms = 400;		//!< per-connection socket timeout
 		int interval_ms = 1000;		//!< scrape cadence, independent of update_ms
+		bool hide_tok_s_thinking = false;	//!< blank throughput while phase == "thinking"
 		size_t max_bytes = 8U << 20;	//!< response body cap
 	};
 
