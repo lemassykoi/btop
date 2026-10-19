@@ -39,6 +39,8 @@ namespace Llm {
 		std::string token_file;	//!< path to file containing the token (plain text or JSON with "api_key")
 		std::string live_url;	//!< optional engine-specific JSON endpoint for live per-request state
 		bool discovered = false;	//!< found by loopback autodetection rather than configured
+		std::string engine_key;		//!< "<family>|<model>" for endpoints chosen by discovery, used
+		//!< to keep exactly one listener per engine when a proxy mirrors an engine
 		bool needs_auth = false;	//!< answered 401: an engine is there but needs a token
 		std::string accept = "text/plain; version=0.0.4";	//!< Accept header for the exposition scrape
 		//? Parsed from url

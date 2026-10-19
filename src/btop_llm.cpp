@@ -29,6 +29,8 @@ tab-size = 4
 #include <cstring>
 #include <ctime>
 #include <fstream>
+#include <map>
+#include <set>
 #include <sstream>
 #include <thread>
 #include <sys/socket.h>
@@ -1432,6 +1434,22 @@ namespace Llm {
 			return status >= 200 and status < 300;
 		}
 
+		//* The first model name in the body, used only to recognise that two listeners are
+		//!< the same engine (an OpenAI-compatible proxy republishes its upstream's labels)
+		std::string model_hint(const std::string& body) {
+			for(const char* name : {"model_name=\"", "model=\""}) {
+				const auto pos = body.find(name);
+				if(pos == std::string::npos)
+					continue;
+				const auto from = pos + std::char_traits<char>::length(name);
+				const auto to = body.find('"', from);
+				if(to == std::string::npos or to == from)
+					continue;
+				return body.substr(from, to - from);
+			}
+			return {};
+		}
+
 		auto engine_family(const std::string& body) -> std::string {
 			static const std::array<std::pair<const char*, const char*>, 5> families = {{
 				{"strata:", "strata"}, {"vllm:", "vllm"}, {"sglang:", "sglang"},
@@ -1459,6 +1477,11 @@ namespace Llm {
 		});
 		ports.erase(std::unique(ports.begin(), ports.end()), ports.end());
 		const auto pass_deadline = now_ms() + discover_budget_ms;
+		//!< Ports already judged and set aside, so a dropped listener is not re-probed forever
+		static std::set<int> ignored_ports;
+		//!< The listener chosen to represent each engine: one row per family+model, lowest port
+		static std::map<std::string, int> primary_ports;
+
 
 		//? 'ports' is ordered by probe priority, not numerically, so membership has to be
 		//!< tested against a numerically sorted copy: binary_search on the priority order
@@ -1467,11 +1490,18 @@ namespace Llm {
 		std::ranges::sort(listening);
 
 		//? An engine that stopped listening disappears instead of leaving a dead row
-		std::erase_if(work, [&listening](const Engine& e) {
+		std::erase_if(work, [&](const Engine& e) {
 			if(not e.target.discovered)
 				return false;
 			const auto port = static_cast<int>(std::atoi(e.target.port.c_str()));
-			return not std::binary_search(listening.begin(), listening.end(), port);
+			if(std::binary_search(listening.begin(), listening.end(), port))
+				return false;
+			//? Free the slot so a replacement on another port can be elected
+			if(const auto it = primary_ports.find(e.target.engine_key);
+				it != primary_ports.end() and it->second == port)
+				primary_ports.erase(it);
+			ignored_ports.erase(port);
+			return true;
 		});
 
 		const char* env_token = options.allow_token_env ? std::getenv("BTOP_LLM_TOKEN") : nullptr;
@@ -1495,6 +1525,8 @@ namespace Llm {
 				continue;
 			if(++probed > max_probes_per_pass or now_ms() > pass_deadline)
 				break;
+			if(ignored_ports.contains(port))
+				continue;
 
 			//? Deliberately just the two conventional paths: looser guesses turn any local
 			//!< service that 401s on some /api/... route into a bogus engine row
@@ -1518,9 +1550,29 @@ namespace Llm {
 				int status = 0;
 				std::string err;
 				if(http_get(probe, sniff, body, status, err, true) and looks_prometheus(body)) {
+					const auto family = engine_family(body);
+					if(family == "other") {
+						//? Metrics but no engine behind them (a model swapper exposing only
+						//!< process counters): kept out of the panel, still reachable manually
+						ignored_ports.insert(port);
+						found = true;
+						break;
+					}
+					std::string key;
+					if(const auto model = model_hint(body); not model.empty()) {
+						key = family + "|" + model;
+						if(const auto it = primary_ports.find(key);
+							it != primary_ports.end() and it->second != port) {
+							ignored_ports.insert(port);	//? its proxy or a duplicate: keep the main one
+							found = true;
+							break;
+						}
+						primary_ports[key] = port;
+					}
 					Engine e;
 					e.target = probe;
-					e.target.label = engine_family(body) + "-" + port_str;
+					e.target.label = family + "-" + port_str;
+					e.target.engine_key = key;
 					e.target.discovered = true;
 					work.push_back(std::move(e));
 					found = true;
@@ -1548,9 +1600,27 @@ namespace Llm {
 						std::string auth_err;
 						if(http_get(retry, sniff, auth_body, auth_status, auth_err, true) and looks_prometheus(auth_body)) {
 							remember_token(candidate);
+							const auto family = engine_family(auth_body);
+							std::string key;
+							if(family == "other") {
+								ignored_ports.insert(port);
+								found = true;
+								break;
+							}
+							if(const auto model = model_hint(auth_body); not model.empty()) {
+								key = family + "|" + model;
+								if(const auto it = primary_ports.find(key);
+									it != primary_ports.end() and it->second != port) {
+									ignored_ports.insert(port);
+									found = true;
+									break;
+								}
+								primary_ports[key] = port;
+							}
 							Engine e;
 							e.target = retry;
-							e.target.label = engine_family(auth_body) + "-" + port_str;
+							e.target.label = family + "-" + port_str;
+							e.target.engine_key = key;
 							e.target.discovered = true;
 							std::erase_if(work, [&](const Engine& other) {
 								return other.target.needs_auth and other.target.port == port_str;
