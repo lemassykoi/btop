@@ -1053,14 +1053,15 @@ static auto configure_tty_mode(std::optional<bool> force_tty) {
 		Config::set("shown_boxes", "cpu mem net proc"s);
 	}
 
-	//? LLM inference engine metrics: inactive unless llm_endpoints is configured
-	if (const auto& endpoints = Config::getS("llm_endpoints"); not endpoints.empty()) {
-		Llm::options.interval_ms = std::max(200, Config::getI("llm_update_ms"));
-		Llm::options.timeout_ms = std::max(50, Config::getI("llm_timeout_ms"));
-		Llm::options.hide_tok_s_thinking = Config::getB("llm_hide_tok_s_thinking");
+	//? LLM engine metrics: configured endpoints plus loopback autodetection
+	Llm::options.interval_ms = std::max(200, Config::getI("llm_update_ms"));
+	Llm::options.timeout_ms = std::max(50, Config::getI("llm_timeout_ms"));
+	Llm::options.discover_ms = std::max(2000, Config::getI("llm_discover_ms"));
+	Llm::options.autodetect = Config::getB("llm_autodetect");
+	Llm::options.hide_tok_s_thinking = Config::getB("llm_hide_tok_s_thinking");
+	if (const auto& endpoints = Config::getS("llm_endpoints"); not endpoints.empty())
 		Llm::set_targets(Tools::ssplit(endpoints, ';'));
-		Llm::start();
-	}
+	Llm::start();	//? also starts with nothing configured, so discovery can find engines
 
 	//? Update list of available themes and generate the selected theme
 	Theme::updateThemes();

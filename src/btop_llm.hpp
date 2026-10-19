@@ -38,6 +38,8 @@ namespace Llm {
 		std::string token;		//!< Bearer token, resolved from literal or token_file
 		std::string token_file;	//!< path to file containing the token (plain text or JSON with "api_key")
 		std::string live_url;	//!< optional engine-specific JSON endpoint for live per-request state
+		bool discovered = false;	//!< found by loopback autodetection rather than configured
+		bool needs_auth = false;	//!< answered 401: an engine is there but needs a token
 		std::string accept = "text/plain; version=0.0.4";	//!< Accept header for the exposition scrape
 		//? Parsed from url
 		std::string host;
@@ -147,6 +149,9 @@ namespace Llm {
 		int interval_ms = 1000;		//!< scrape cadence, independent of update_ms
 		bool hide_tok_s_thinking = false;	//!< blank throughput while phase == "thinking"
 		size_t max_bytes = 8U << 20;	//!< response body cap
+		bool autodetect = true;		//!< find engines on loopback with no configuration at all
+		int discover_ms = 30000;		//!< how often to rescan listening ports
+		bool allow_token_env = true;		//!< fall back to $BTOP_LLM_TOKEN for discovered 401s
 	};
 
 	//* Guarded by mtx: written by collect() on the collector thread, read by draw on demand
@@ -162,6 +167,9 @@ namespace Llm {
 	//* Start/stop the background collector thread (own cadence, never blocks the UI thread)
 	void start();
 	void stop();
+
+	//* Scan loopback listening sockets for Prometheus endpoints (Linux only, no-op elsewhere)
+	void discover();
 
 	//* Scrape all targets, refresh normalized fields. Called by the collector thread.
 	void collect();
@@ -197,5 +205,7 @@ namespace Llm {
 	std::vector<Series> parse_prometheus(const std::string& text);
 
 	//* Fetch <text/plain exposition body> over a plain HTTP GET. Returns false and sets err on failure.
-	bool http_get(const Target& target, const Options& opts, std::string& body, int& status, std::string& err);
+	//!< tolerate_truncation lets discovery check a body's shape without downloading it all
+	bool http_get(const Target& target, const Options& opts, std::string& body, int& status, std::string& err,
+		bool tolerate_truncation = false);
 }

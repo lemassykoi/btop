@@ -2779,7 +2779,9 @@ namespace Llm {
 		try {
 			std::scoped_lock lock(mtx);
 			if (engines.empty()) {
-				lines.push_back(color("main_fg") + "no llm_endpoints configured");
+				lines.push_back(color("main_fg")
+					+ (options.autodetect ? "scanning loopback for engines\u2026"s
+										  : "no llm_endpoints configured"s));
 				return lines;
 			}
 			const auto inner = std::max(0, width - 4);
@@ -2788,8 +2790,8 @@ namespace Llm {
 				//? Every field is padded before it is coloured, so a state change (idle ->
 				//!< reading -> generating) cannot shift the numbers sideways
 				std::string line;
-				int used = 11;	//? label column + separator
-				line += color("title") + Fx::b + ljust(uresize(e.target.label, 10), 10) + Fx::ub + ' ';
+				int used = 13;	//? label column + separator
+				line += color("title") + Fx::b + ljust(uresize(e.target.label, 12), 12) + Fx::ub + ' ';
 				if (not e.up) {
 					line += ljust("down", 11) + gradient("used", 100.0) + "DOWN"s + color("main_fg");
 					if (not e.error.empty())

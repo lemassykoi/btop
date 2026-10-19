@@ -126,6 +126,10 @@ namespace Config {
 
 		{"llm_timeout_ms", 		"#* Socket timeout in milliseconds for each engine request."},
 
+		{"llm_autodetect", 		"#* Find engines exposing Prometheus metrics on local listening ports; always probed via loopback."},
+
+		{"llm_discover_ms", 		"#* How often in milliseconds to rescan loopback ports for newly started engines."},
+
 		{"llm_hide_tok_s_thinking", 	"#* Show \"--\" instead of a token rate while an engine reports phase \"thinking\".\n"
 								"#* Off by default: reasoning engines keep that phase for a whole generation, so enabling it hides throughput entirely."},
 
@@ -325,6 +329,7 @@ namespace Config {
 	std::unordered_map<std::string_view, string> stringsTmp;
 
 	std::unordered_map<std::string_view, bool> bools = {
+		{"llm_autodetect", true},
 		{"llm_hide_tok_s_thinking", false},
 		{"theme_background", true},
 		{"truecolor", true},
@@ -396,6 +401,7 @@ namespace Config {
 		{"update_ms", 2000},
 		{"llm_update_ms", 1000},
 		{"llm_timeout_ms", 400},
+		{"llm_discover_ms", 30000},
 		{"net_download", 100},
 		{"net_upload", 100},
 		{"proc_tree_auto_collapse", 0},

@@ -87,6 +87,20 @@ static void dump(const Llm::Engine& e) {
 int main(int argc, char** argv) {
 	std::vector<std::string> specs;
 
+	if(argc > 1 and std::string(argv[1]) == "--discover") {
+		Llm::options.timeout_ms = 600;
+		Llm::discover();
+		Llm::collect();
+		std::scoped_lock lock(Llm::mtx);
+		std::cout << "discovered " << Llm::engines.size() << " endpoint(s) on loopback\n";
+		for(const auto& e : Llm::engines)
+			std::cout << "  " << (e.up ? "[ok]  " : (e.target.needs_auth ? "[401] " : "[--]  "))
+			          << e.target.label << "  " << e.target.url
+			          << (e.detected.empty() ? ""s : "  family=" + e.detected)
+			          << (e.error.empty() ? ""s : "  " + e.error) << "\n";
+		return 0;
+	}
+
 	if(argc > 2 and std::string(argv[1]) == "--parse-only") {
 		std::ifstream file(argv[2]);
 		std::stringstream buf;
