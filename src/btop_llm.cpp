@@ -90,6 +90,15 @@ namespace Llm {
 		return s;
 	}
 
+	//* Expand a leading ~ so token paths can be written the way users write them everywhere else
+	static std::string expand_home(std::string path) {
+		if(path.starts_with("~/") or path == "~") {
+			if(const char* home = std::getenv("HOME"); home != nullptr and *home != '\0')
+				return std::string(home) + path.substr(1);
+		}
+		return path;
+	}
+
 	//* Read a bearer token from a file: plain text, or JSON with an "api_key" member.
 	static std::string read_token_file(const std::string& path, std::string& err) {
 		std::ifstream file(path);
@@ -515,6 +524,7 @@ namespace Llm {
 				std::string source = fields[2];
 				trim(source);
 				if(source.starts_with('/') or source.starts_with('~') or source.ends_with(".json")) {
+					source = expand_home(source);
 					engine.target.token_file = source;
 					engine.target.token = read_token_file(source, engine.error);
 					if(engine.target.token.empty())
