@@ -1343,12 +1343,18 @@ namespace Llm {
 		ports.erase(std::unique(ports.begin(), ports.end()), ports.end());
 		const auto pass_deadline = now_ms() + discover_budget_ms;
 
+		//? 'ports' is ordered by probe priority, not numerically, so membership has to be
+		//!< tested against a numerically sorted copy: binary_search on the priority order
+		//!< reported live ports as absent and deleted the engines bound to high port numbers
+		auto listening = ports;
+		std::ranges::sort(listening);
+
 		//? An engine that stopped listening disappears instead of leaving a dead row
-		std::erase_if(work, [&ports](const Engine& e) {
+		std::erase_if(work, [&listening](const Engine& e) {
 			if(not e.target.discovered)
 				return false;
 			const auto port = static_cast<int>(std::atoi(e.target.port.c_str()));
-			return not std::binary_search(ports.begin(), ports.end(), port);
+			return not std::binary_search(listening.begin(), listening.end(), port);
 		});
 
 		const char* env_token = options.allow_token_env ? std::getenv("BTOP_LLM_TOKEN") : nullptr;
