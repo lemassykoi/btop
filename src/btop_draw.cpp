@@ -2798,7 +2798,9 @@ namespace Llm {
 				}
 
 				const auto tok_s = e.current_tok_s();
-				line += color("main_fg") + ljust(uresize(e.state.empty() ? e.detected : e.state, 11), 11) + ' ';
+				//? Engines without a live state field (vLLM) would otherwise repeat their
+				//!< name here, so an unknown state reads as "--" rather than the engine name
+				line += color("main_fg") + ljust(uresize(e.state, 11), 11) + ' ';
 				used += 12;
 
 				//? Fields are added whole or the tail is dropped from here on: independent
@@ -2823,7 +2825,10 @@ namespace Llm {
 					used += 9;
 				}
 				if (fits(10)) {
-					line += "ctx " + rjust(as_pct(e.ctx_usage), 4) + "  ";
+					//? One usage slot, whichever source the engine actually provides: vLLM
+					//!< reports KV block usage, Strata reports neither and gets context fill
+					const auto has_kv = e.kv_usage >= 0;
+					line += (has_kv ? "kv "s : "ctx "s) + rjust(as_pct(has_kv ? e.kv_usage : e.ctx_usage), 4) + "  ";
 					used += 10;
 				}
 				if (fits(10)) {
