@@ -1475,6 +1475,16 @@ namespace Llm {
 		});
 
 		const char* env_token = options.allow_token_env ? std::getenv("BTOP_LLM_TOKEN") : nullptr;
+
+		//? A reverse proxy in front of an engine shares its key but does not name it in
+		//!< its own cmdline, so keys harvested from one local port are tried on the others
+		static std::vector<std::string> known_tokens;
+		const auto remember_token = [](const std::string& token) {
+			if(token.empty() or token.size() > 512 or known_tokens.size() >= 8)
+				return;
+			if(std::find(known_tokens.begin(), known_tokens.end(), token) == known_tokens.end())
+				known_tokens.push_back(token);
+		};
 		int probed = 0;
 		for(const int port : ports) {
 			const auto port_str = std::to_string(port);
@@ -1519,16 +1529,25 @@ namespace Llm {
 				if(status == 401) {
 					//? First try to authenticate with the key the engine itself runs with, so a
 					//!< protected /metrics still shows up live instead of as a dead row
-					std::string candidate = env_token != nullptr ? env_token : ""s;
-					if(candidate.empty() and options.token_scan)
-						candidate = token_for_port(port);
-					if(not candidate.empty()) {
+					std::vector<std::string> candidates;
+					if(env_token != nullptr and *env_token != '\0')
+						candidates.emplace_back(env_token);
+					else
+						candidates = known_tokens;	//? a sibling port's key often works here
+					if(options.token_scan) {
+						const auto scanned = token_for_port(port);
+						if(not scanned.empty()
+							and std::find(candidates.begin(), candidates.end(), scanned) == candidates.end())
+							candidates.push_back(scanned);
+					}
+					for(const auto& candidate : candidates) {
 						Target retry = probe;
 						retry.token = candidate;
 						std::string auth_body;
 						int auth_status = 0;
 						std::string auth_err;
 						if(http_get(retry, sniff, auth_body, auth_status, auth_err, true) and looks_prometheus(auth_body)) {
+							remember_token(candidate);
 							Engine e;
 							e.target = retry;
 							e.target.label = engine_family(auth_body) + "-" + port_str;
@@ -1542,7 +1561,9 @@ namespace Llm {
 						}
 					}
 				}
-				if(status == 401 and auth_rows < 4 and has_engine_health(port_str)) {
+				if(found)
+					break;	//? authenticated already: no second row for this port
+				if(status == 401 and not found and auth_rows < 4 and has_engine_health(port_str)) {
 					//? Something is there but wants a token: surface it rather than hide it,
 					//!< a few at most so an unrelated 401 cannot flood the panel
 					++auth_rows;
