@@ -514,7 +514,7 @@ namespace Config {
 					validError = "Malformatted preset in config value presets!";
 					return false;
 				}
-				if (not is_in(vals.at(0), "cpu", "mem", "net", "proc", "gpu0", "gpu1", "gpu2", "gpu3", "gpu4", "gpu5")) {
+				if (not is_in(vals.at(0), "cpu", "mem", "net", "proc", "llm", "gpu0", "gpu1", "gpu2", "gpu3", "gpu4", "gpu5")) {
 					validError = "Invalid box name in config value presets!";
 					return false;
 				}
