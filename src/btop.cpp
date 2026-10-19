@@ -291,6 +291,13 @@ static void _crash_handler(const int sig) {
 
 static void _signal_handler(const int sig) {
 	switch (sig) {
+		//? SIGTERM and SIGHUP were not handled, so the default disposition terminated btop
+		//!< without clean_quit(): the terminal was left in the alternate screen with the
+		//!< cursor hidden and mouse reporting on, corrupting the shell that took over.
+		//!< Closing a tab (SIGHUP) or killing the process (SIGTERM) is routine, so treat
+		//!< both like Ctrl-C and let the main loop restore the terminal.
+		case SIGTERM:
+		case SIGHUP:
 		case SIGINT:
 			Global::should_quit = true;
 			if (Runner::active) Runner::stopping = true;
@@ -1071,6 +1078,8 @@ static auto configure_tty_mode(std::optional<bool> force_tty) {
 	//? Setup signal handlers for CTRL-C, CTRL-Z, resume and terminal resize
 	std::atexit(_exit_handler);
 	std::signal(SIGINT, _signal_handler);
+	std::signal(SIGTERM, _signal_handler);
+	std::signal(SIGHUP, _signal_handler);
 	std::signal(SIGTSTP, _signal_handler);
 	std::signal(SIGCONT, _signal_handler);
 	std::signal(SIGWINCH, _signal_handler);
