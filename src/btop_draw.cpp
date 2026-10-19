@@ -2809,6 +2809,20 @@ namespace Llm {
 					continue;
 				}
 
+				//? Some local services expose Prometheus without being inference engines
+				//!< (llama-swap does). A row of dashes reads as a broken engine, so when not a
+				//!< single field maps, say what it is instead. The state column is deliberately
+				//!< not part of the test: "idle" here is only the absence of movement, not data
+				if (not e.gauges.empty() and e.kv_usage < 0 and e.running < 0 and e.waiting < 0
+					and e.current_tok_s() < 0 and e.hit_rate < 0 and e.hit_rate_lifetime < 0
+					and e.accept_rate < 0 and e.accept_rate_lifetime < 0 and e.ctx_usage < 0
+					and e.context_tokens < 0) {
+					line += color("inactive_fg") + "not an engine ("
+						+ std::to_string(e.gauges.size()) + " series)";
+					lines.push_back(line);
+					continue;
+				}
+
 				const auto tok_s = e.display_tok_s();
 				//? Engines without a live state field (vLLM) would otherwise repeat their
 				//!< name here, so an unknown state reads as "--" rather than the engine name
