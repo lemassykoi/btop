@@ -1182,6 +1182,12 @@ static auto configure_tty_mode(std::optional<bool> force_tty) {
 			if (Menu::active and (Menu::redraw or (Llm::menu_open and Llm::new_data_since_menu_draw())))
 				Menu::process();
 
+			//? The llm panel grows a row per engine, which discovery may decide after the fact
+			if (Llm::layout_dirty.exchange(false)) {
+				Draw::calcSizes();
+				Runner::run("all", false, true);
+			}
+
 			//? Loop over input polling and input action processing
 			for (auto current_time = time_ms(); current_time < future_time; current_time = time_ms()) {
 

@@ -2586,7 +2586,9 @@ namespace Llm {
 
 	//* Frame (2) plus one dense line per engine, with a floor so the empty state fits
 	int box_height() {
-		return 2 + std::max(1u, static_cast<unsigned>(target_count()));
+		const auto rows = std::max<size_t>(1, target_count());
+		layout_count = rows;
+		return 2 + static_cast<int>(rows);
 	}
 
 

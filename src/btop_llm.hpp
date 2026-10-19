@@ -189,8 +189,15 @@ namespace Llm {
 	extern std::string box;
 	extern std::atomic<bool> menu_open;
 
-	//* Rows the docked box needs: frame plus one dense line per configured engine
+	//* Rows the docked box needs: frame plus one dense line per engine. Also records the
+	//!< count it was sized for, so collect() can ask for a reflow when that changes
 	int box_height();
+
+	//!< Endpoints the current box height was sized for, and a flag asking the main loop to
+	//!< relayout: discovery fills in after calcSizes() has already run, which otherwise
+	//!< leaves the box one row tall no matter how many engines were found
+	extern std::atomic<size_t> layout_count;
+	extern std::atomic<bool> layout_dirty;
 
 	//* One dense line per engine, for the docked box
 	std::vector<std::string> box_lines();

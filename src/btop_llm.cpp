@@ -559,6 +559,9 @@ namespace Llm {
 		return work.size();
 	}
 
+	std::atomic<size_t> layout_count{0};
+	std::atomic<bool> layout_dirty{false};
+
 	void clear() {
 		work.clear();
 		std::scoped_lock lock(mtx);
@@ -1209,8 +1212,16 @@ namespace Llm {
 			engine.has_baseline = true;
 		}
 
-		std::scoped_lock lock(mtx);
-		engines = work;
+		{
+			//? Discovery and engine disappearance change the row count after the initial
+			//!< layout, so ask the main thread to reflow the panel instead of truncating it
+			std::scoped_lock lock(mtx);
+			engines = work;
+			if(work.size() != layout_count.load()) {
+				layout_count = work.size();
+				layout_dirty = true;
+			}
+		}
 	}
 
 	//* ---------------------------------------------------------------- discovery
