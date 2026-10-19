@@ -1283,26 +1283,23 @@ namespace Llm {
 			return false;
 		}
 
-		//* A 401 on /metrics alone is not enough: auth-aware proxies 401 on anything. Engines
-		//!< also serve the OpenAI conventions, so require /health or /v1/models to exist
-		//!< (any status but not-found/unsupported counts).
-		auto has_engine_api(const std::string& port) -> bool {
-			static const std::array<const char*, 2> probes = {"/health", "/v1/models"};
-			for(const char* path : probes) {
-				Target probe;
-				probe.url = "http://127.0.0.1:"s + port + path;
-				if(not parse_url(probe.url, probe))
-					continue;
-				Options sniff = options;
-				sniff.max_bytes = 4U << 10;
-				std::string body;
-				int status = 0;
-				std::string err;
-				http_get(probe, sniff, body, status, err, true);
-				if(status != 0 and status != 404 and status != 405 and status != 501)
-					return true;
-			}
-			return false;
+		//* A 401 on /metrics alone proves nothing: an auth middleware 401s every route. Engines
+		//!< worth showing are those that answer /health successfully without credentials —
+		//!< vLLM does (200), whereas a generic API server 401s it too. Measured on two boxes:
+		//!< vLLM 30000/30001 -> /health 200, opencode serve 4096 -> /health 401, so requiring a
+		//!< 2xx here separates real engines from local web services that merely gate everything.
+		auto has_engine_health(const std::string& port) -> bool {
+			Target probe;
+			probe.url = "http://127.0.0.1:"s + port + "/health";
+			if(not parse_url(probe.url, probe))
+				return false;
+			Options sniff = options;
+			sniff.max_bytes = 4U << 10;
+			std::string body;
+			int status = 0;
+			std::string err;
+			http_get(probe, sniff, body, status, err, true);
+			return status >= 200 and status < 300;
 		}
 
 		auto engine_family(const std::string& body) -> std::string {
@@ -1376,7 +1373,7 @@ namespace Llm {
 					found = true;
 					break;
 				}
-				if(status == 401 and auth_rows < 4 and has_engine_api(port_str)) {
+				if(status == 401 and auth_rows < 4 and has_engine_health(port_str)) {
 					//? Something is there but wants a token: surface it rather than hide it,
 					//!< a few at most so an unrelated 401 cannot flood the panel
 					++auth_rows;
