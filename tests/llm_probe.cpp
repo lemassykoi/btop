@@ -88,7 +88,10 @@ int main(int argc, char** argv) {
 	std::vector<std::string> specs;
 
 	if(argc > 1 and std::string(argv[1]) == "--discover") {
-		Llm::options.timeout_ms = 600;
+		if(const char* to = std::getenv("LLM_PROBE_TIMEOUT"); to != nullptr and *to != '\0')
+			Llm::options.timeout_ms = std::atoi(to);
+		else
+			Llm::options.timeout_ms = 600;
 		Llm::discover();
 		Llm::collect();
 		std::scoped_lock lock(Llm::mtx);
