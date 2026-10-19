@@ -152,6 +152,7 @@ namespace Llm {
 		bool autodetect = true;		//!< find engines on loopback with no configuration at all
 		int discover_ms = 30000;		//!< how often to rescan listening ports
 		bool allow_token_env = true;		//!< fall back to $BTOP_LLM_TOKEN for discovered 401s
+		bool token_scan = true;			//!< reuse the --api-key / *_API_KEY the engine process itself runs with
 	};
 
 	//* Guarded by mtx: written by collect() on the collector thread, read by draw on demand

@@ -130,6 +130,9 @@ namespace Config {
 
 		{"llm_discover_ms", 		"#* How often in milliseconds to rescan loopback ports for newly started engines."},
 
+		{"llm_token_scan", 		"#* Reuse the --api-key (or VLLM_API_KEY/OPENAI_API_KEY environment value) of a local engine process\n"
+								"#* so a protected /metrics is monitored without configuring a token. Set False to disable."},
+
 		{"llm_hide_tok_s_thinking", 	"#* Show \"--\" instead of a token rate while an engine reports phase \"thinking\".\n"
 								"#* Off by default: reasoning engines keep that phase for a whole generation, so enabling it hides throughput entirely."},
 
@@ -330,6 +333,7 @@ namespace Config {
 
 	std::unordered_map<std::string_view, bool> bools = {
 		{"llm_autodetect", true},
+		{"llm_token_scan", true},
 		{"llm_hide_tok_s_thinking", false},
 		{"theme_background", true},
 		{"truecolor", true},

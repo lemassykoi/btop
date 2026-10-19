@@ -1058,6 +1058,7 @@ static auto configure_tty_mode(std::optional<bool> force_tty) {
 	Llm::options.timeout_ms = std::max(50, Config::getI("llm_timeout_ms"));
 	Llm::options.discover_ms = std::max(2000, Config::getI("llm_discover_ms"));
 	Llm::options.autodetect = Config::getB("llm_autodetect");
+	Llm::options.token_scan = Config::getB("llm_token_scan");
 	Llm::options.hide_tok_s_thinking = Config::getB("llm_hide_tok_s_thinking");
 	if (const auto& endpoints = Config::getS("llm_endpoints"); not endpoints.empty())
 		Llm::set_targets(Tools::ssplit(endpoints, ';'));

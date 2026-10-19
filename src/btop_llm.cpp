@@ -25,7 +25,6 @@ tab-size = 4
 #include <chrono>
 #include <charconv>
 #include <cmath>
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -35,6 +34,7 @@ tab-size = 4
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <fcntl.h>
+#include <dirent.h>
 #include <netdb.h>
 #include <poll.h>
 #include <unistd.h>
@@ -1239,6 +1239,112 @@ namespace Llm {
 		constexpr int discover_timeout_ms = 200;
 		constexpr uint64_t discover_budget_ms = 1200;
 
+		//!< Read a NUL-separated /proc file with a hard cap. Must stream rather than seek to
+		//!< the end: /proc entries report st_size 0, so a tellg-based size reads nothing
+		std::string read_capped(const std::string& path, size_t cap) {
+			std::ifstream stream(path, std::ios::binary);
+			if(not stream.is_open())
+				return {};
+			std::string out;
+			std::array<char, 8192> buffer {};
+			while(out.size() < cap and static_cast<bool>(stream.read(buffer.data(), buffer.size())))
+				out.append(buffer.data(), static_cast<size_t>(stream.gcount()));
+			out.append(buffer.data(), static_cast<size_t>(stream.gcount()));	//? final short read
+			if(out.size() > cap)
+				out.resize(cap);
+			return out;
+		}
+
+		//* A running engine already publishes its own key where ps(1) can see it, so reuse it
+		//!< instead of asking the user to hand-configure a token for a process on their own box
+		std::string token_for_port(int port) {
+			const auto port_str = std::to_string(port);
+			const auto self = std::to_string(::getpid());
+			DIR* dir = ::opendir("/proc");
+			if(dir == nullptr)
+				return {};
+			std::string result;
+			while(const auto* entry = ::readdir(dir)) {
+				const std::string pid(entry->d_name);
+				if(pid.empty() or pid == self or not std::all_of(pid.begin(), pid.end(),
+					[](char c) { return std::isdigit(static_cast<unsigned char>(c)); }))
+					continue;
+				const auto base = "/proc/"s + pid;
+				const auto cmdline = read_capped(base + "/cmdline", 32U << 10);
+				if(cmdline.empty())
+					continue;
+				std::vector<std::string> args;
+				for(size_t start = 0; start < cmdline.size(); ) {
+					const auto end = cmdline.find('\0', start);
+					const auto stop = end == std::string::npos ? cmdline.size() : end;
+					if(stop > start)
+						args.emplace_back(cmdline.substr(start, stop - start));
+					start = stop + 1;
+				}
+
+				bool mentions = false;
+				for(size_t i = 0; i < args.size() and not mentions; ++i) {
+					if(args[i] == "--port" and i + 1 < args.size() and args[i + 1] == port_str)
+						mentions = true;
+					else if(args[i].starts_with("--port=") and args[i].substr(7) == port_str)
+						mentions = true;
+					else if(args[i].size() > port_str.size() + 1 and args[i].ends_with(":" + port_str))
+						mentions = true;
+				}
+				if(not mentions)
+					continue;
+
+				for(size_t i = 0; i < args.size() and result.empty(); ++i) {
+					if(args[i] == "--api-key" and i + 1 < args.size())
+						result = args[i + 1];
+					else if(args[i].starts_with("--api-key="))
+						result = args[i].substr(10);
+				}
+				if(not result.empty())
+					break;
+
+				const auto env = read_capped(base + "/environ", 128U << 10);
+				for(const char* name : {"VLLM_API_KEY=", "OPENAI_API_KEY=", "API_KEY="}) {
+					const auto pos = env.find(name);
+					if(pos == std::string::npos)
+						continue;
+					const auto from = pos + std::char_traits<char>::length(name);
+					const auto to = env.find('\0', from);
+					result = env.substr(from, to == std::string::npos ? std::string::npos : to - from);
+					break;
+				}
+				if(not result.empty())
+					break;
+
+				//? Engines commonly keep the key in the config file named on their own
+				//!< command line (Strata: --config <file>.json with an "api_key" member),
+				//!< resolved against the process working directory
+				std::string err;
+				for(size_t i = 0; i < args.size() and result.empty(); ++i) {
+					auto file = args[i];
+					if(file.starts_with("--config="))
+						file = file.substr(9);
+					else if(file == "--config" and i + 1 < args.size())
+						file = args[i + 1];
+					else if(not file.ends_with(".json"))
+						continue;
+					if(file.empty() or file.front() != '/') {
+						std::array<char, 4096> cwd {};
+						const auto len = ::readlink((base + "/cwd").c_str(), cwd.data(), cwd.size() - 1);
+						if(len > 0) {
+							cwd[static_cast<size_t>(len)] = '\0';
+							file = cwd.data() + "/"s + file;
+						}
+					}
+					result = read_token_file(file, err);
+				}
+				if(not result.empty())
+					break;
+			}
+			::closedir(dir);
+			return result;
+		}
+
 		//* Well-known inference ports, tried first so a useful row lands in the first pass
 		auto port_rank(int port) -> int {
 			static const std::array<int, 10> preferred = {8013, 8000, 30000, 30001, 8080, 8081, 11434, 5000, 3000, 8001};
@@ -1372,8 +1478,10 @@ namespace Llm {
 		int probed = 0;
 		for(const int port : ports) {
 			const auto port_str = std::to_string(port);
-			if(std::any_of(work.begin(), work.end(),
-				[&](const Engine& e) { return e.target.port == port_str and e.target.host.find('.') != std::string::npos; }))
+			if(std::any_of(work.begin(), work.end(), [&](const Engine& e) {
+				return e.target.port == port_str and not e.target.needs_auth
+					and e.target.host.find('.') != std::string::npos;
+			}))
 				continue;
 			if(++probed > max_probes_per_pass or now_ms() > pass_deadline)
 				break;
@@ -1408,6 +1516,32 @@ namespace Llm {
 					found = true;
 					break;
 				}
+				if(status == 401) {
+					//? First try to authenticate with the key the engine itself runs with, so a
+					//!< protected /metrics still shows up live instead of as a dead row
+					std::string candidate = env_token != nullptr ? env_token : ""s;
+					if(candidate.empty() and options.token_scan)
+						candidate = token_for_port(port);
+					if(not candidate.empty()) {
+						Target retry = probe;
+						retry.token = candidate;
+						std::string auth_body;
+						int auth_status = 0;
+						std::string auth_err;
+						if(http_get(retry, sniff, auth_body, auth_status, auth_err, true) and looks_prometheus(auth_body)) {
+							Engine e;
+							e.target = retry;
+							e.target.label = engine_family(auth_body) + "-" + port_str;
+							e.target.discovered = true;
+							std::erase_if(work, [&](const Engine& other) {
+								return other.target.needs_auth and other.target.port == port_str;
+							});
+							work.push_back(std::move(e));
+							found = true;
+							break;
+						}
+					}
+				}
 				if(status == 401 and auth_rows < 4 and has_engine_health(port_str)) {
 					//? Something is there but wants a token: surface it rather than hide it,
 					//!< a few at most so an unrelated 401 cannot flood the panel
@@ -1425,6 +1559,17 @@ namespace Llm {
 			}
 			(void) found;
 		}
+
+		//? Known engines lead, unauthenticated or unknown-family endpoints go last
+		std::stable_sort(work.begin(), work.end(), [](const Engine& a, const Engine& b) {
+			const auto rank = [](const Engine& e) {
+				if(e.target.needs_auth)
+					return 2;
+				const auto& label = e.target.label;
+				return label.starts_with("other-") or label.starts_with("prometheus-") ? 1 : 0;
+			};
+			return rank(a) < rank(b);
+		});
 #endif
 	}
 

@@ -2795,6 +2795,13 @@ namespace Llm {
 				int used = 13;	//? label column + separator
 				line += color("title") + Fx::b + ljust(uresize(e.target.label, 12), 12) + Fx::ub + ' ';
 				if (not e.up) {
+					//? A locked endpoint is alive and reachable, just unauthenticated:
+					//!< painting it as DOWN made running engines look dead
+					if (e.target.needs_auth) {
+						line += color("inactive_fg") + ljust("locked", 11) + "no token"s;
+						lines.push_back(line);
+						continue;
+					}
 					line += ljust("down", 11) + gradient("used", 100.0) + "DOWN"s + color("main_fg");
 					if (not e.error.empty())
 						line += "  " + uresize(e.error, std::max(0, inner - 25));
