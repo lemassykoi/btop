@@ -87,6 +87,24 @@ static void dump(const Llm::Engine& e) {
 int main(int argc, char** argv) {
 	std::vector<std::string> specs;
 
+	if(argc > 1 and std::string(argv[1]) == "--thread") {
+		//? Exercise the real collector thread (start/stop) the way btop does, and sample twice
+		Llm::options.autodetect = true;
+		Llm::options.interval_ms = 1000;
+		Llm::start();
+		for(int pass = 1; pass <= 2; ++pass) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+			std::scoped_lock lock(Llm::mtx);
+			std::cout << "pass " << pass << ": engines=" << Llm::engines.size();
+			for(const auto& e : Llm::engines)
+				std::cout << " | " << e.target.label << " up=" << e.up << " gen=" << e.gen_tok_s
+				          << " state='" << e.display_state() << "'";
+			std::cout << "\n";
+		}
+		Llm::stop();
+		return 0;
+	}
+
 	if(argc > 1 and std::string(argv[1]) == "--discover") {
 		if(const char* to = std::getenv("LLM_PROBE_TIMEOUT"); to != nullptr and *to != '\0')
 			Llm::options.timeout_ms = std::atoi(to);
