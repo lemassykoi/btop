@@ -2800,7 +2800,7 @@ namespace Llm {
 				const auto tok_s = e.current_tok_s();
 				//? Engines without a live state field (vLLM) would otherwise repeat their
 				//!< name here, so an unknown state reads as "--" rather than the engine name
-				line += color("main_fg") + ljust(uresize(e.state, 11), 11) + ' ';
+				line += color("main_fg") + ljust(uresize(e.state.empty() ? "--"s : e.state, 11), 11) + ' ';
 				used += 12;
 
 				//? Fields are added whole or the tail is dropped from here on: independent
