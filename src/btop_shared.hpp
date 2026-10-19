@@ -70,6 +70,7 @@ namespace Global {
 	extern atomic<bool> resized;
 	extern string overlay;
 	extern string clock;
+	extern string fg_white;
 	extern uid_t real_uid, set_uid;
 	extern atomic<bool> init_conf;
 }

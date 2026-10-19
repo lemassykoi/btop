@@ -2865,8 +2865,6 @@ namespace Llm {
 					line += "spec " + rjust(as_pct(e.accept_rate >= 0 ? e.accept_rate : e.accept_rate_lifetime), 4);
 					used += 9;
 				}
-				if (not e.model.empty() and fits(8))
-					line += "  " + color("main_fg") + uresize(e.model, inner - used - 2);
 				lines.push_back(line);
 			}
 		}
@@ -2890,6 +2888,24 @@ namespace Llm {
 			if (row >= y + height - 1)
 				break;
 			out += Mv::to(row++, x + 2) + line + Fx::reset;
+		}
+
+		//? Model name pinned to the bottom-right corner in white: it is the one thing that
+		//!< identifies what is being served, and it cost most of a row when inlined
+		std::string model;
+		{
+			std::scoped_lock lock(mtx);
+			for (const auto& e : engines) {
+				if (e.up and not e.model.empty()) {
+					model = e.model;
+					break;
+				}
+			}
+		}
+		if (not model.empty() and width > 14) {
+			const auto m = uresize(model, width - 6);
+			out += Mv::to(y + height - 1, std::max(x + 2, x + width - 2 - static_cast<int>(ulen(m))))
+				+ Global::fg_white + m + Fx::reset;
 		}
 		return out;
 	}
