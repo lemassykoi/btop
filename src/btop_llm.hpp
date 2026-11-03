@@ -216,6 +216,8 @@ namespace Llm {
 
 	//* Fetch <text/plain exposition body> over a plain HTTP GET. Returns false and sets err on failure.
 	//!< tolerate_truncation lets discovery check a body's shape without downloading it all
+	//!< keep_alive polls one endpoint over a pooled HTTP/1.1 connection (retried once on a stale
+	//!< socket): one long-lived connection per endpoint instead of a fresh TCP dial per scrape
 	bool http_get(const Target& target, const Options& opts, std::string& body, int& status, std::string& err,
-		bool tolerate_truncation = false);
+		bool tolerate_truncation = false, bool keep_alive = false);
 }

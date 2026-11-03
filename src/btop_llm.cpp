@@ -309,8 +309,16 @@ namespace Llm {
 
 	//* ---------------------------------------------------------------- http
 
-	//! Minimal blocking HTTP/1.1 GET over a plain socket: no TLS, no keep-alive, no gzip.
+	//! Minimal blocking HTTP/1.1 GET over a plain socket: no TLS, no gzip.
 	//! btop links nothing but libc/libstdc++, so pulling in an HTTP client library is not an option.
+	//! Polled engine endpoints pass keep_alive: one request per connection, exactly one framed
+	//! response read back, and the socket kept in the pool for the next scrape — dialling a new
+	//! TCP connection every second is what piles TIME-WAIT state onto the engine.
+	//! One-shot callers (discovery probes) keep the old connect/drain-until-close behavior.
+
+	//? Persistent connections to polled endpoints, keyed "host:port". Only the collector thread
+	//!< touches this map; stop() drains it once that thread has been joined.
+	static std::unordered_map<std::string, int> keepalive;
 	static bool send_all(int fd, const std::string& buf, int timeout_ms, std::string& err) {
 		size_t sent = 0;
 		while(sent < buf.size()) {
@@ -351,11 +359,209 @@ namespace Llm {
 		}
 	}
 
+	//!< Content-Length from lowercased headers (status line included, every header is \r\n-prefixed).
+	static long long content_length_of(const std::string& lower_head) {
+		static const std::string needle = "\r\ncontent-length:";
+		const auto pos = lower_head.find(needle);
+		if(pos == std::string::npos)
+			return -1;
+		const char* first = lower_head.data() + pos + needle.size();
+		const char* last = lower_head.data() + lower_head.size();
+		const char* p = first;
+		while(p < last and (*p == ' ' or *p == '\t'))
+			++p;
+		long long value = -1;
+		const auto [ptr, ec] = std::from_chars(p, last, value);
+		if(ec != std::errc() or ptr == p)
+			return -1;
+		return value;
+	}
+
+	//!< Status code from a lowercased-or-raw header block, 0 when unparseable.
+	static int status_of_head(const std::string& head) {
+		const auto eol = head.find("\r\n");
+		const std::string line = head.substr(0, eol == std::string::npos ? head.size() : eol);
+		if(line.starts_with("HTTP/") and line.size() > 8)
+			return std::atoi(line.c_str() + 8);
+		return 0;
+	}
+
+	//!< Turn a complete raw exchange into a body: status, optional chunked decode, error mapping.
+	static bool parse_http(const std::string& raw, size_t head_end, const Options& opts, bool truncated,
+		bool tolerate_truncation, std::string& body, int& status, std::string& err) {
+		const std::string head = raw.substr(0, head_end);
+		std::string payload = raw.substr(head_end + 4);
+
+		status = status_of_head(head);
+
+		const std::string lower_head = to_lower(head);
+		if(lower_head.find("transfer-encoding: chunked") != std::string::npos) {
+			std::string decoded;
+			if(not dechunk(payload, decoded, opts.max_bytes)) {
+				err = "malformed chunked response";
+				return false;
+			}
+			payload = std::move(decoded);
+		}
+
+		if(status < 200 or status > 299) {
+			err = "HTTP "s + std::to_string(status);
+			//? Keep a short fragment of the body: engines report the reason there
+			const auto fragment = payload.substr(0, 120);
+			if(not fragment.empty())
+				err += " " + fragment;
+			return false;
+		}
+		if(truncated and not tolerate_truncation) {
+			err = "response exceeds "s + std::to_string(opts.max_bytes / (1024 * 1024)) + " MiB";
+			return false;
+		}
+
+		body = std::move(payload);
+		return true;
+	}
+
+	static int dial_target(const Target& target, const Options& opts, std::string& err);
+
 	bool http_get(const Target& target, const Options& opts, std::string& body, int& status, std::string& err,
-		bool tolerate_truncation) {
+		bool tolerate_truncation, bool keep_alive) {
 		status = 0;
 		body.clear();
 
+		const std::string key = target.host + ':' + target.port;
+
+		for(int attempt = 0; attempt < (keep_alive ? 2 : 1); ++attempt) {
+			int fd = -1;
+			bool reused = false;
+			if(keep_alive) {
+				if(const auto it = keepalive.find(key); it != keepalive.end()) {
+					fd = it->second;
+					reused = true;
+					//? Reapplied on use: the socket timeout may have changed since the connect
+					struct timeval tv{};
+					tv.tv_sec = opts.timeout_ms / 1000;
+					tv.tv_usec = (opts.timeout_ms % 1000) * 1000;
+					::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+					::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+				}
+			}
+			if(fd < 0) {
+				if(keep_alive)
+					keepalive.erase(key);
+				fd = dial_target(target, opts, err);
+				if(fd < 0)
+					return false;
+			}
+
+			const auto drop = [&fd, &key] {
+				::close(fd);
+				keepalive.erase(key);
+			};
+
+			std::string request = "GET "s + target.path + " HTTP/1.1\r\n"
+				"Host: " + target.host + ":" + target.port + "\r\n"
+				"Accept: " + (target.accept.empty() ? "text/plain; version=0.0.4"s : target.accept) + "\r\n"
+				"Accept-Encoding: identity\r\n"
+				"User-Agent: btop-llm/1.0\r\n"
+				"Connection: " + (keep_alive ? "keep-alive"s : "close"s) + "\r\n";
+			if(not target.token.empty())
+				request += "Authorization: Bearer " + target.token + "\r\n";
+			request += "\r\n";
+
+			if(not send_all(fd, request, opts.timeout_ms, err)) {
+				drop();
+				if(reused)	//? the peer died between uses: redial and retry once
+					continue;
+				return false;
+			}
+
+			//? Persistent: stop at the end of one Content-Length-framed response and keep the
+			//? socket. Everything else (probes, chunked, HTTP/1.0, Connection: close) drains to
+			//? end of stream like before and closes.
+			std::string raw;
+			bool truncated = false;
+			bool head_seen = false;
+			bool reusable = false;
+			bool bodyless = false;
+			size_t head_end = 0;
+			long long expect = -1;
+
+			while(true) {
+				char buffer[16384];
+				const auto n = ::recv(fd, buffer, sizeof(buffer), 0);
+				if(n < 0) {
+					if(errno == EINTR)
+						continue;
+					err = "recv failed: "s + std::strerror(errno);
+					drop();
+					if(reused and raw.empty())	//? idle socket killed while we were not looking
+						continue;
+					return false;
+				}
+				if(n == 0) {
+					if(reused and raw.empty()) {
+						drop();
+						continue;
+					}
+					break;
+				}
+				if(raw.size() + static_cast<size_t>(n) > opts.max_bytes) {
+					truncated = true;
+					break;
+				}
+				raw.append(buffer, static_cast<size_t>(n));
+				if(keep_alive and not head_seen) {
+					const auto he = raw.find("\r\n\r\n");
+					if(he == std::string::npos)
+						continue;
+					head_seen = true;
+					head_end = he;
+					const std::string lower_head = to_lower(raw.substr(0, he));
+					const bool chunked = lower_head.find("transfer-encoding: chunked") != std::string::npos;
+					const bool want_close = lower_head.find("connection: close") != std::string::npos;
+					expect = content_length_of(lower_head);
+					//? 1xx/204/304 carry no body: the response is complete with the headers
+					const auto code = status_of_head(raw);
+					bodyless = code == 204 or code == 304 or (code >= 100 and code < 200);
+					reusable = not chunked and (bodyless or expect >= 0) and not want_close and raw.starts_with("HTTP/1.1");
+				}
+				if(keep_alive and reusable and not bodyless and raw.size() >= head_end + 4 + static_cast<size_t>(expect)) {
+					raw.resize(head_end + 4 + static_cast<size_t>(expect));
+					break;
+				}
+				if(keep_alive and reusable and bodyless and head_seen)
+					break;
+			}
+
+			if(keep_alive and truncated) {	//? abandoned mid-stream: unusable and unclosable-clean
+				drop();
+				err = "response exceeds "s + std::to_string(opts.max_bytes / (1024 * 1024)) + " MiB";
+				return false;
+			}
+
+			const auto he = raw.find("\r\n\r\n");
+			if(he == std::string::npos) {
+				err = truncated ? "response exceeds limit before headers" : "malformed HTTP response";
+				::close(fd);
+				keepalive.erase(key);
+				return false;
+			}
+
+			const bool ok = parse_http(raw, he, opts, truncated, tolerate_truncation, body, status, err);
+			if(keep_alive and reusable and not truncated)
+				keepalive[key] = fd;
+			else {
+				::close(fd);
+				keepalive.erase(key);
+			}
+			return ok;
+		}
+		return false;
+	}
+
+	//? Open a fresh connection to the target: walk getaddrinfo results, nonblocking connect
+	//? with timeout, then blocking mode with explicit socket timeouts. Returns fd or -1.
+	static int dial_target(const Target& target, const Options& opts, std::string& err) {
 		//? getaddrinfo wants "::1", not the "[::1]" form used in URLs and stored in Target::host
 		std::string node = target.host;
 		if(node.size() > 2 and node.front() == '[' and node.back() == ']')
@@ -369,7 +575,7 @@ namespace Llm {
 		const int rc = ::getaddrinfo(node.c_str(), target.port.c_str(), &hints, &addresses);
 		if(rc != 0) {
 			err = "resolving "s + node + ": " + gai_strerror(rc);
-			return false;
+			return -1;
 		}
 
 		int fd = -1;
@@ -418,85 +624,9 @@ namespace Llm {
 		if(fd < 0) {
 			if(err.empty())
 				err = "could not connect to "s + target.host + ":" + target.port;
-			return false;
+			return -1;
 		}
-
-		std::string request = "GET "s + target.path + " HTTP/1.1\r\n"
-			"Host: " + target.host + ":" + target.port + "\r\n"
-			"Accept: " + (target.accept.empty() ? "text/plain; version=0.0.4"s : target.accept) + "\r\n"
-			"Accept-Encoding: identity\r\n"
-			"User-Agent: btop-llm/1.0\r\n"
-			"Connection: close\r\n";
-		if(not target.token.empty())
-			request += "Authorization: Bearer " + target.token + "\r\n";
-		request += "\r\n";
-
-		if(not send_all(fd, request, opts.timeout_ms, err)) {
-			::close(fd);
-			return false;
-		}
-
-		std::string raw;
-		bool truncated = false;
-		while(true) {
-			char buffer[16384];
-			const auto n = ::recv(fd, buffer, sizeof(buffer), 0);
-			if(n < 0) {
-				if(errno == EINTR)
-					continue;
-				err = "recv failed: "s + std::strerror(errno);
-				::close(fd);
-				return false;
-			}
-			if(n == 0)
-				break;
-			if(raw.size() + static_cast<size_t>(n) > opts.max_bytes) {
-				truncated = true;
-				break;
-			}
-			raw.append(buffer, static_cast<size_t>(n));
-		}
-		::close(fd);
-
-		const auto header_end = raw.find("\r\n\r\n");
-		if(header_end == std::string::npos) {
-			err = truncated ? "response exceeds limit before headers" : "malformed HTTP response";
-			return false;
-		}
-
-		const std::string head = raw.substr(0, header_end);
-		std::string payload = raw.substr(header_end + 4);
-
-		const auto first_line_end = head.find("\r\n");
-		const std::string status_line = head.substr(0, first_line_end == std::string::npos ? head.size() : first_line_end);
-		if(status_line.starts_with("HTTP/") and status_line.size() > 8)
-			status = std::atoi(status_line.c_str() + 8);
-
-		const std::string lower_head = to_lower(head);
-		if(lower_head.find("transfer-encoding: chunked") != std::string::npos) {
-			std::string decoded;
-			if(not dechunk(payload, decoded, opts.max_bytes)) {
-				err = "malformed chunked response";
-				return false;
-			}
-			payload = std::move(decoded);
-		}
-
-		if(status < 200 or status > 299) {
-			err = "HTTP "s + std::to_string(status);
-			//? Keep a short fragment of the body: engines report the reason there
-			const auto fragment = payload.substr(0, 120);
-			if(not fragment.empty())
-				err += " " + fragment;
-			return false;
-		}
-		if(truncated and not tolerate_truncation) {
-			err = "response exceeds "s + std::to_string(opts.max_bytes / (1024 * 1024)) + " MiB";
-			return false;
-		}
-
-		body = std::move(payload);
-		return true;
+		return fd;
 	}
 
 	//* ---------------------------------------------------------------- targets
@@ -957,7 +1087,7 @@ namespace Llm {
 		std::string body;
 		int status = 0;
 		std::string err;
-		if(not http_get(source, options, body, status, err))
+		if(not http_get(source, options, body, status, err, false, true))
 			return;
 
 		json::JVal root;
@@ -1022,7 +1152,7 @@ namespace Llm {
 			std::string body;
 			int status = 0;
 			std::string err;
-			if(not http_get(engine.target, options, body, status, err)) {
+			if(not http_get(engine.target, options, body, status, err, false, true)) {
 				engine.status = status;
 				engine.up = false;
 				engine.error = err;
@@ -1709,6 +1839,10 @@ namespace Llm {
 		running = false;
 		if(collector.joinable())
 			collector.join();
+		//? The collector thread is gone: its pooled connections are ours to close
+		for(const auto& [key, fd] : keepalive)
+			::close(fd);
+		keepalive.clear();
 	}
 
 }
